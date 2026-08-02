@@ -27,6 +27,9 @@ Compiled artifacts are intentionally not committed by default because firmware
 binaries can contain embedded credentials. For release/OTA builds, generate
 fresh artifacts from a clean configuration and publish them deliberately.
 
+The artifacts currently committed under `artifacts/` were generated deliberately
+from the local production config for deployment/OTA preparation.
+
 ## Build
 
 Build from the `Debug` directory using STM32CubeIDE generated makefiles:
