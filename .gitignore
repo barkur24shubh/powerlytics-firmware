@@ -1,0 +1,13 @@
+.DS_Store
+
+# STM32CubeIDE generated build output
+Debug/
+Release/
+
+# Local editor/workspace files
+.metadata/
+*.log
+
+# Keep published firmware binaries in artifacts/
+!artifacts/
+!artifacts/**
