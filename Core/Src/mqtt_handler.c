@@ -28,6 +28,7 @@
 #include "app_log.h"
 #include "app_debug_led.h"
 #include "app_modbus_payload.h"
+#include "app_firmware.h"
 
 /* ===== Externals ===== */
 extern uart2_rx_t g_u2rx;
@@ -91,6 +92,143 @@ static void publish_config_status(const char *config_id,
     }
 
     MQTT_Publish(topic_d2c_message, message);
+}
+
+static const char *json_str_or_empty(cJSON *root, const char *key)
+{
+    cJSON *item = cJSON_GetObjectItem(root, key);
+    return (cJSON_IsString(item) && item->valuestring) ? item->valuestring : "";
+}
+
+static int json_int_or(cJSON *root, const char *key, int fallback)
+{
+    cJSON *item = cJSON_GetObjectItem(root, key);
+    return cJSON_IsNumber(item) ? item->valueint : fallback;
+}
+
+static void publish_ota_status(const char *deployment_id,
+                               const char *status,
+                               const char *stage,
+                               int progress,
+                               const char *target_version,
+                               const char *reason)
+{
+    char message[512];
+
+    const char *safe_deployment = (deployment_id && deployment_id[0]) ? deployment_id : "unknown";
+    const char *safe_status = (status && status[0]) ? status : "OTA_UNKNOWN";
+    const char *safe_stage = (stage && stage[0]) ? stage : "UNKNOWN";
+    const char *safe_target = (target_version && target_version[0]) ? target_version : "";
+    const char *safe_reason = (reason && reason[0]) ? reason : "";
+
+    if (progress < 0) {
+        progress = 0;
+    } else if (progress > 100) {
+        progress = 100;
+    }
+
+    snprintf(message,
+             sizeof(message),
+             "{"
+             "\"type\":\"ota_ack\","
+             "\"deploymentId\":\"%s\","
+             "\"status\":\"%s\","
+             "\"stage\":\"%s\","
+             "\"progress\":%d,"
+             "\"currentVersion\":\"%s\","
+             "\"targetVersion\":\"%s\","
+             "\"deviceModel\":\"%s\","
+             "\"pcbRevision\":\"%s\","
+             "\"reason\":\"%s\""
+             "}",
+             safe_deployment,
+             safe_status,
+             safe_stage,
+             progress,
+             APP_FIRMWARE_VERSION,
+             safe_target,
+             APP_DEVICE_MODEL,
+             APP_PCB_REVISION,
+             safe_reason);
+
+    print("[OTA] ACK publish: %s\r\n", message);
+    MQTT_Publish(topic_d2c_message, message);
+}
+
+static uint8_t handle_ota_cjson(cJSON *root)
+{
+    const char *deployment_id = json_str_or_empty(root, "deploymentId");
+    const char *target_version = json_str_or_empty(root, "firmwareVersion");
+    const char *device_model = json_str_or_empty(root, "deviceModel");
+    const char *pcb_revision = json_str_or_empty(root, "pcbRevision");
+    const char *artifact_url = json_str_or_empty(root, "artifactUrl");
+    const char *sha256 = json_str_or_empty(root, "sha256");
+    int size = json_int_or(root, "size", 0);
+
+    if (deployment_id[0] == '\0') {
+        publish_ota_status("unknown",
+                           "OTA_REJECTED",
+                           "VALIDATE",
+                           0,
+                           target_version,
+                           "missing_deploymentId");
+        return 1U;
+    }
+
+    publish_ota_status(deployment_id,
+                       "OTA_RECEIVED",
+                       "RECEIVE",
+                       0,
+                       target_version,
+                       "received");
+
+    if (target_version[0] == '\0' ||
+        device_model[0] == '\0' ||
+        pcb_revision[0] == '\0' ||
+        artifact_url[0] == '\0' ||
+        sha256[0] == '\0' ||
+        size <= 0) {
+        publish_ota_status(deployment_id,
+                           "OTA_REJECTED",
+                           "VALIDATE",
+                           0,
+                           target_version,
+                           "missing_required_field");
+        return 1U;
+    }
+
+    if (strcmp(device_model, APP_DEVICE_MODEL) != 0) {
+        publish_ota_status(deployment_id,
+                           "OTA_REJECTED",
+                           "VALIDATE",
+                           0,
+                           target_version,
+                           "device_model_mismatch");
+        return 1U;
+    }
+
+    if (strcmp(pcb_revision, APP_PCB_REVISION) != 0) {
+        publish_ota_status(deployment_id,
+                           "OTA_REJECTED",
+                           "VALIDATE",
+                           0,
+                           target_version,
+                           "pcb_revision_mismatch");
+        return 1U;
+    }
+
+    /*
+     * Download/install is intentionally not enabled yet. The next OTA phase
+     * should add W25Q staging + SHA256 verification + bootloader handoff.
+     */
+    publish_ota_status(deployment_id,
+                       "OTA_REJECTED",
+                       "VALIDATE",
+                       0,
+                       target_version,
+                       "ota_download_not_implemented");
+
+    return 1U;
 }
 
 static int32_t mqtt_dbm_from_rssi(int32_t rssi)
@@ -780,6 +918,13 @@ void handle_downlink_cjson(const char *payload_str)
     if (cJSON_IsString(msg) && strcmp(msg->valuestring, "actuation") == 0)
     {
         handle_actuation_cjson(root);
+        cJSON_Delete(root);
+        return;
+    }
+
+    if (cJSON_IsString(msg) && strcmp(msg->valuestring, "ota") == 0)
+    {
+        handle_ota_cjson(root);
         cJSON_Delete(root);
         return;
     }

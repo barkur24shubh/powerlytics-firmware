@@ -8,6 +8,7 @@
 #include "modem_handler.h"
 #include "app_log.h"
 #include "debug_uart.h"
+#include "app_firmware.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -167,6 +168,7 @@ uint8_t app_health_publish_now(void)
              "\"type\":\"health\","
              "\"uptimeMs\":%lu,"
              "\"imei\":\"%s\","
+             "\"fw\":{\"version\":\"%s\",\"build\":\"%s\",\"model\":\"%s\",\"pcb\":\"%s\"},"
              "\"commState\":\"%s\","
              "\"lastError\":\"%s\","
              "\"mqttOnline\":%s,"
@@ -197,6 +199,10 @@ uint8_t app_health_publish_now(void)
              "}",
              (unsigned long)now,
              imei,
+             APP_FIRMWARE_VERSION,
+             APP_FIRMWARE_BUILD,
+             APP_DEVICE_MODEL,
+             APP_PCB_REVISION,
              comm_manager_state_name(comm_manager_get_state()),
              comm_manager_error_name(comm_manager_get_last_error()),
              comm_manager_is_online() ? "true" : "false",

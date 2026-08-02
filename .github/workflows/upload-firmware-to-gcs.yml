@@ -1,0 +1,185 @@
+name: Upload firmware to GCS
+
+on:
+  workflow_dispatch:
+    inputs:
+      firmware_version:
+        description: Firmware version to publish
+        required: true
+        default: "1.0.0"
+      firmware_build:
+        description: Firmware build label
+        required: true
+        default: "manual"
+      device_model:
+        description: Target device model
+        required: true
+        default: "blackpill-f407-gateway"
+      pcb_revision:
+        description: Target PCB revision
+        required: true
+        default: "revA"
+      artifact_dir:
+        description: Directory containing firmware artifacts
+        required: true
+        default: "artifacts"
+      gcs_prefix:
+        description: Prefix inside bucket
+        required: true
+        default: "firmware"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  upload:
+    name: Upload firmware artifacts
+    runs-on: ubuntu-latest
+
+    env:
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ secrets.GCP_PROJECT_NUMBER }}
+      GCS_BUCKET_NAME: ${{ secrets.GCS_BUCKET_NAME }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      FIRMWARE_VERSION: ${{ inputs.firmware_version }}
+      FIRMWARE_BUILD: ${{ inputs.firmware_build }}
+      DEVICE_MODEL: ${{ inputs.device_model }}
+      PCB_REVISION: ${{ inputs.pcb_revision }}
+      ARTIFACT_DIR: ${{ inputs.artifact_dir }}
+      GCS_PREFIX: ${{ inputs.gcs_prefix }}
+
+    steps:
+      - name: Checkout firmware repository
+        uses: actions/checkout@v4
+
+      - name: Validate required settings
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required=(
+            GCP_PROJECT_ID
+            GCP_PROJECT_NUMBER
+            GCS_BUCKET_NAME
+            GCP_WORKLOAD_IDENTITY_PROVIDER
+            GCP_SERVICE_ACCOUNT_EMAIL
+          )
+
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing GitHub secret: ${name}"
+              exit 1
+            fi
+          done
+
+          if [[ ! -d "${ARTIFACT_DIR}" ]]; then
+            echo "::error::Artifact directory not found: ${ARTIFACT_DIR}"
+            exit 1
+          fi
+
+          required_artifacts=(
+            BALCKPILL_BASED_GENERIC_GATEWAY.bin
+            BALCKPILL_BASED_GENERIC_GATEWAY.hex
+            BALCKPILL_BASED_GENERIC_GATEWAY.elf
+            BALCKPILL_BASED_GENERIC_GATEWAY.map
+          )
+
+          for artifact in "${required_artifacts[@]}"; do
+            if [[ ! -f "${ARTIFACT_DIR}/${artifact}" ]]; then
+              echo "::error::Missing required firmware artifact: ${ARTIFACT_DIR}/${artifact}"
+              exit 1
+            fi
+          done
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Prepare firmware release package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          upload_dir="$(mktemp -d)"
+          cp "${ARTIFACT_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.bin" "${upload_dir}/"
+          cp "${ARTIFACT_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.hex" "${upload_dir}/"
+          cp "${ARTIFACT_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.elf" "${upload_dir}/"
+          cp "${ARTIFACT_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.map" "${upload_dir}/"
+
+          (
+            cd "${upload_dir}"
+            sha256sum BALCKPILL_BASED_GENERIC_GATEWAY.* > SHA256SUMS
+          )
+
+          bin_size="$(stat -c%s "${upload_dir}/BALCKPILL_BASED_GENERIC_GATEWAY.bin")"
+          bin_sha256="$(sha256sum "${upload_dir}/BALCKPILL_BASED_GENERIC_GATEWAY.bin" | awk '{print $1}')"
+          bucket="${GCS_BUCKET_NAME#gs://}"
+          object_prefix="${GCS_PREFIX}/${DEVICE_MODEL}/${PCB_REVISION}/${FIRMWARE_VERSION}/${GITHUB_SHA}"
+
+          cat > "${upload_dir}/manifest.json" <<EOF
+          {
+            "type": "firmware_manifest",
+            "schemaVersion": 1,
+            "firmwareVersion": "${FIRMWARE_VERSION}",
+            "firmwareBuild": "${FIRMWARE_BUILD}",
+            "deviceModel": "${DEVICE_MODEL}",
+            "pcbRevision": "${PCB_REVISION}",
+            "gitSha": "${GITHUB_SHA}",
+            "githubRunId": "${GITHUB_RUN_ID}",
+            "bucket": "${bucket}",
+            "objectPrefix": "${object_prefix}",
+            "binary": {
+              "fileName": "BALCKPILL_BASED_GENERIC_GATEWAY.bin",
+              "size": ${bin_size},
+              "sha256": "${bin_sha256}"
+            },
+            "files": [
+              "BALCKPILL_BASED_GENERIC_GATEWAY.bin",
+              "BALCKPILL_BASED_GENERIC_GATEWAY.hex",
+              "BALCKPILL_BASED_GENERIC_GATEWAY.elf",
+              "BALCKPILL_BASED_GENERIC_GATEWAY.map",
+              "SHA256SUMS"
+            ]
+          }
+          EOF
+
+          echo "upload_dir=${upload_dir}" >> "${GITHUB_OUTPUT}"
+          echo "bucket=${bucket}" >> "${GITHUB_OUTPUT}"
+          echo "object_prefix=${object_prefix}" >> "${GITHUB_OUTPUT}"
+          echo "bin_size=${bin_size}" >> "${GITHUB_OUTPUT}"
+          echo "bin_sha256=${bin_sha256}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload firmware package to GCS
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gcloud storage cp \
+            --recursive \
+            --cache-control="no-cache, max-age=0" \
+            "${{ steps.package.outputs.upload_dir }}/"* \
+            "gs://${{ steps.package.outputs.bucket }}/${{ steps.package.outputs.object_prefix }}/"
+
+      - name: Print OTA deployment values
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Firmware uploaded successfully."
+          echo "GCS path: gs://${{ steps.package.outputs.bucket }}/${{ steps.package.outputs.object_prefix }}/"
+          echo "Binary size: ${{ steps.package.outputs.bin_size }}"
+          echo "Binary sha256: ${{ steps.package.outputs.bin_sha256 }}"
+          echo ""
+          echo "Use the backend to create a signed URL for:"
+          echo "gs://${{ steps.package.outputs.bucket }}/${{ steps.package.outputs.object_prefix }}/BALCKPILL_BASED_GENERIC_GATEWAY.bin"
