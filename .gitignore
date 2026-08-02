@@ -7,7 +7,9 @@ Release/
 # Local editor/workspace files
 .metadata/
 *.log
+Core/Inc/config.local.h
 
-# Keep published firmware binaries in artifacts/
+# Keep generated build output out of normal commits.
+artifacts/*
 !artifacts/
-!artifacts/**
+!artifacts/README.md
