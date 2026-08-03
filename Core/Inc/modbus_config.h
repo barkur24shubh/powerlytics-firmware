@@ -225,11 +225,7 @@ typedef struct {
 
 static inline uint8_t modbus_cfg_default_debug_print_enabled(void)
 {
-#if defined(DEBUG)
   return 1u;
-#else
-  return 0u;
-#endif
 }
 
 static inline void modbus_cfg_set_debug_print_enabled(modbus_cfg_t *cfg,

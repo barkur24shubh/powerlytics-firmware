@@ -7,6 +7,7 @@ extern "C" {
 
 #include <stdint.h>
 #include <stdbool.h> // Required for the new bool parameter
+#include "w25q16.h"
 
 /* Public API */
 void     WakeUp_GSM(void);
@@ -36,6 +37,32 @@ void     WaitForNetworkAndBlinkLED(void);
 void     Check_Internet_Service(void);
 uint8_t modem_get_signal_quality(int32_t *rssi, int32_t *ber);
 uint8_t Modem_SoftReset(void);
+
+typedef void (*modem_http_download_progress_cb_t)(uint32_t downloaded,
+                                                  uint32_t total,
+                                                  void *ctx);
+
+uint8_t modem_http_download_to_w25q(const char *url,
+                                    W25Q_Handle *flash,
+                                    uint32_t base_addr,
+                                    uint32_t max_size,
+                                    uint32_t expected_size,
+                                    const char *expected_sha256,
+                                    uint32_t *out_size,
+                                    char out_sha256[65],
+                                    modem_http_download_progress_cb_t progress_cb,
+                                    void *progress_ctx);
+uint8_t modem_tcp_http_download_to_w25q(const char *url,
+                                        W25Q_Handle *flash,
+                                        uint32_t base_addr,
+                                        uint32_t max_size,
+                                        uint32_t expected_size,
+                                        const char *expected_sha256,
+                                        uint32_t *out_size,
+                                        char out_sha256[65],
+                                        modem_http_download_progress_cb_t progress_cb,
+                                        void *progress_ctx);
+const char *modem_http_download_last_error(void);
 #ifdef __cplusplus
 }
 #endif

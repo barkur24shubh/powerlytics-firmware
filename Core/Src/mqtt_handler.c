@@ -29,6 +29,8 @@
 #include "app_debug_led.h"
 #include "app_modbus_payload.h"
 #include "app_firmware.h"
+#include "comm_manager.h"
+#include "app_ota_manifest.h"
 
 /* ===== Externals ===== */
 extern uart2_rx_t g_u2rx;
@@ -68,8 +70,86 @@ uint8_t SendCommandWithRetry(const char *cmd, const char *expected, uint16_t tim
 #define MQTT_PUBLISH_CMD_OK_TIMEOUT_MS      15000U
 #define MQTT_PUBLISH_URC_TIMEOUT_MS         30000UL
 
+#define OTA_STAGING_BASE_ADDR               APP_OTA_STAGING_W25Q_ADDR
+#define OTA_STAGING_MAX_SIZE                (W25Q_TOTAL_SIZE - OTA_STAGING_BASE_ADDR)
+#define OTA_MAX_ARTIFACT_URL_LEN            240U
+#define OTA_SERIAL_DEBUG_PRINT              0U
+
+#define OTA_LOG(...) do { if (OTA_SERIAL_DEBUG_PRINT) { print(__VA_ARGS__); } } while (0)
+
 static const char *s_last_publish_stage = "NONE";
 static uint8_t s_last_publish_attempted = 1U;
+static W25Q_Handle *s_ota_flash = NULL;
+static volatile uint8_t s_ota_busy = 0U;
+static uint8_t s_ota_boot_result_seen_empty = 0U;
+
+typedef struct {
+    uint8_t last_percent;
+} ota_progress_ctx_t;
+
+static void ota_download_progress(uint32_t downloaded,
+                                  uint32_t total,
+                                  void *ctx);
+
+void MQTT_SetOtaFlash(W25Q_Handle *flash)
+{
+    s_ota_flash = flash;
+}
+
+uint8_t MQTT_OtaIsBusy(void)
+{
+    return s_ota_busy;
+}
+
+static void ota_download_progress(uint32_t downloaded,
+                                  uint32_t total,
+                                  void *ctx)
+{
+    ota_progress_ctx_t *progress = (ota_progress_ctx_t *)ctx;
+
+    if (total == 0U || !progress) {
+        return;
+    }
+
+    uint8_t percent = (uint8_t)((downloaded * 100U) / total);
+    if (percent >= 100U || percent >= (uint8_t)(progress->last_percent + 10U)) {
+        progress->last_percent = percent;
+        OTA_LOG("[OTA][DOWNLOAD] progress=%u%% bytes=%lu/%lu\r\n",
+                percent,
+                (unsigned long)downloaded,
+                (unsigned long)total);
+    }
+}
+
+static uint8_t ota_url_is_supported(const char *url, const char **reason)
+{
+    size_t len;
+
+    if (reason) {
+        *reason = "invalid_artifact_url";
+    }
+
+    if (!url || !url[0]) {
+        return 0U;
+    }
+
+    len = strlen(url);
+    if (len > OTA_MAX_ARTIFACT_URL_LEN) {
+        if (reason) {
+            *reason = "artifact_url_too_long";
+        }
+        return 0U;
+    }
+
+    if (strncmp(url, "http://", 7U) != 0) {
+        if (reason) {
+            *reason = "only_http_public_bucket_url_supported";
+        }
+        return 0U;
+    }
+
+    return 1U;
+}
 
 static void publish_config_status(const char *config_id,
                                   const char *status,
@@ -106,12 +186,234 @@ static int json_int_or(cJSON *root, const char *key, int fallback)
     return cJSON_IsNumber(item) ? item->valueint : fallback;
 }
 
-static void publish_ota_status(const char *deployment_id,
-                               const char *status,
-                               const char *stage,
-                               int progress,
-                               const char *target_version,
-                               const char *reason)
+static uint32_t ota_crc32_sw(const void *data, uint32_t len)
+{
+    const uint8_t *p = (const uint8_t *)data;
+    uint32_t crc = 0xFFFFFFFFUL;
+
+    for (uint32_t i = 0; i < len; i++) {
+        crc ^= p[i];
+        for (uint8_t b = 0; b < 8U; b++) {
+            uint32_t mask = (uint32_t)(-(int32_t)(crc & 1UL));
+            crc = (crc >> 1) ^ (0xEDB88320UL & mask);
+        }
+    }
+
+    return ~crc;
+}
+
+static int8_t ota_hex_nibble(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return (int8_t)(c - '0');
+    }
+    if (c >= 'a' && c <= 'f') {
+        return (int8_t)(c - 'a' + 10);
+    }
+    if (c >= 'A' && c <= 'F') {
+        return (int8_t)(c - 'A' + 10);
+    }
+    return -1;
+}
+
+static uint8_t ota_hex_to_bytes_32(const char *hex, uint8_t out[32])
+{
+    if (!hex || !out || strlen(hex) != 64U) {
+        return 0U;
+    }
+
+    for (uint32_t i = 0U; i < 32U; i++) {
+        int8_t hi = ota_hex_nibble(hex[i * 2U]);
+        int8_t lo = ota_hex_nibble(hex[i * 2U + 1U]);
+
+        if (hi < 0 || lo < 0) {
+            return 0U;
+        }
+
+        out[i] = (uint8_t)(((uint8_t)hi << 4U) | (uint8_t)lo);
+    }
+
+    return 1U;
+}
+
+static void ota_copy_manifest_string(char *dst, uint32_t dst_len, const char *src)
+{
+    if (!dst || dst_len == 0U) {
+        return;
+    }
+
+    memset(dst, 0, dst_len);
+
+    if (!src) {
+        return;
+    }
+
+    strncpy(dst, src, dst_len - 1U);
+}
+
+static uint8_t ota_write_pending_manifest(uint32_t image_size,
+                                          const char *sha256_hex,
+                                          const char *deployment_id,
+                                          const char *target_version)
+{
+    app_ota_manifest_t manifest;
+    app_ota_manifest_t verify;
+
+    if (!s_ota_flash || image_size == 0U || image_size > APP_OTA_APPLICATION_SIZE) {
+        return 0U;
+    }
+
+    memset(&manifest, 0xFF, sizeof(manifest));
+    manifest.magic = APP_OTA_MANIFEST_MAGIC;
+    manifest.version = APP_OTA_MANIFEST_VERSION;
+    manifest.header_size = sizeof(manifest);
+    manifest.state = APP_OTA_STATE_PENDING;
+    manifest.image_size = image_size;
+    manifest.image_addr = APP_OTA_STAGING_W25Q_ADDR;
+    manifest.app_addr = APP_OTA_APPLICATION_ADDR;
+    manifest.app_max_size = APP_OTA_APPLICATION_SIZE;
+    manifest.install_result = APP_OTA_RESULT_NONE;
+    manifest.install_error = APP_OTA_ERR_UNSET;
+
+    if (!ota_hex_to_bytes_32(sha256_hex, manifest.sha256)) {
+        return 0U;
+    }
+
+    ota_copy_manifest_string(manifest.deployment_id,
+                             sizeof(manifest.deployment_id),
+                             deployment_id);
+    ota_copy_manifest_string(manifest.target_version,
+                             sizeof(manifest.target_version),
+                             target_version);
+
+    manifest.crc32 = ota_crc32_sw(&manifest, APP_OTA_MANIFEST_CRC_LEN);
+
+    if (!w25q_erase_sector_4k(s_ota_flash, APP_OTA_MANIFEST_W25Q_ADDR)) {
+        return 0U;
+    }
+
+    if (!w25q_write(s_ota_flash,
+                    APP_OTA_MANIFEST_W25Q_ADDR,
+                    (const uint8_t *)&manifest,
+                    sizeof(manifest))) {
+        return 0U;
+    }
+
+    memset(&verify, 0, sizeof(verify));
+    if (!w25q_read(s_ota_flash,
+                   APP_OTA_MANIFEST_W25Q_ADDR,
+                   (uint8_t *)&verify,
+                   sizeof(verify))) {
+        return 0U;
+    }
+
+    return (memcmp(&manifest, &verify, sizeof(manifest)) == 0) ? 1U : 0U;
+}
+
+static uint8_t ota_read_manifest(app_ota_manifest_t *manifest)
+{
+    if (!s_ota_flash || !manifest) {
+        return 0U;
+    }
+
+    memset(manifest, 0, sizeof(*manifest));
+    if (!w25q_read(s_ota_flash,
+                   APP_OTA_MANIFEST_W25Q_ADDR,
+                   (uint8_t *)manifest,
+                   sizeof(*manifest))) {
+        return 0U;
+    }
+
+    if (manifest->magic != APP_OTA_MANIFEST_MAGIC ||
+        manifest->version != APP_OTA_MANIFEST_VERSION ||
+        manifest->header_size != sizeof(*manifest) ||
+        manifest->state != APP_OTA_STATE_PENDING ||
+        manifest->image_addr != APP_OTA_STAGING_W25Q_ADDR ||
+        manifest->app_addr != APP_OTA_APPLICATION_ADDR ||
+        manifest->app_max_size != APP_OTA_APPLICATION_SIZE ||
+        manifest->image_size == 0U ||
+        manifest->image_size > APP_OTA_APPLICATION_SIZE) {
+        return 0U;
+    }
+
+    return (ota_crc32_sw(manifest, APP_OTA_MANIFEST_CRC_LEN) == manifest->crc32) ? 1U : 0U;
+}
+
+static uint8_t ota_clear_manifest(void)
+{
+    if (!s_ota_flash) {
+        return 0U;
+    }
+
+    return w25q_erase_sector_4k(s_ota_flash, APP_OTA_MANIFEST_W25Q_ADDR);
+}
+
+static const char *ota_boot_error_reason(uint32_t err)
+{
+    switch (err) {
+    case APP_OTA_ERR_NONE:
+        return "bootloader_install_ok";
+    case APP_OTA_ERR_STAGED_HASH:
+        return "bootloader_staged_hash_mismatch";
+    case APP_OTA_ERR_FLASH_PROGRAM:
+        return "bootloader_flash_program_failed";
+    case APP_OTA_ERR_FLASH_VERIFY:
+        return "bootloader_flash_verify_failed";
+    default:
+        return "bootloader_unknown_result";
+    }
+}
+
+static const char *json_trimmed_str_or_empty(cJSON *root, const char *key)
+{
+    const char *s = json_str_or_empty(root, key);
+
+    while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') {
+        s++;
+    }
+
+    return s;
+}
+
+static uint8_t json_type_equals(const char *type, const char *expected)
+{
+    if (!type || !expected) {
+        return 0U;
+    }
+
+    while (*type == ' ' || *type == '\t' || *type == '\r' || *type == '\n') {
+        type++;
+    }
+
+    while (*type && *expected) {
+        char a = *type++;
+        char b = *expected++;
+
+        if (a >= 'A' && a <= 'Z') {
+            a = (char)(a - 'A' + 'a');
+        }
+        if (b >= 'A' && b <= 'Z') {
+            b = (char)(b - 'A' + 'a');
+        }
+
+        if (a != b) {
+            return 0U;
+        }
+    }
+
+    while (*type == ' ' || *type == '\t' || *type == '\r' || *type == '\n') {
+        type++;
+    }
+
+    return (*type == '\0' && *expected == '\0') ? 1U : 0U;
+}
+
+static uint8_t publish_ota_status(const char *deployment_id,
+                                  const char *status,
+                                  const char *stage,
+                                  int progress,
+                                  const char *target_version,
+                                  const char *reason)
 {
     char message[512];
 
@@ -151,8 +453,72 @@ static void publish_ota_status(const char *deployment_id,
              APP_PCB_REVISION,
              safe_reason);
 
-    print("[OTA] ACK publish: %s\r\n", message);
-    MQTT_Publish(topic_d2c_message, message);
+    OTA_LOG("[OTA] ACK publish: %s\r\n", message);
+    return MQTT_Publish(topic_d2c_message, message);
+}
+
+static uint8_t publish_ota_status_reported(const char *deployment_id,
+                                           const char *status,
+                                           const char *stage,
+                                           int progress,
+                                           const char *target_version,
+                                           const char *reason)
+{
+    uint8_t ok = publish_ota_status(deployment_id,
+                                    status,
+                                    stage,
+                                    progress,
+                                    target_version,
+                                    reason);
+    comm_manager_report_publish_result(ok);
+    return ok;
+}
+
+uint8_t MQTT_ReportOtaBootResultOnce(void)
+{
+    app_ota_manifest_t manifest;
+    const char *status;
+    const char *reason;
+    uint8_t ok;
+
+    if (s_ota_boot_result_seen_empty) {
+        return 0U;
+    }
+
+    if (!ota_read_manifest(&manifest)) {
+        s_ota_boot_result_seen_empty = 1U;
+        return 0U;
+    }
+
+    if (manifest.install_result == APP_OTA_RESULT_NONE) {
+        return 0U;
+    }
+
+    if (manifest.install_result == APP_OTA_RESULT_INSTALLED) {
+        status = "OTA_INSTALLED";
+        reason = "bootloader_install_ok";
+    } else if (manifest.install_result == APP_OTA_RESULT_FAILED) {
+        status = "OTA_INSTALL_FAILED";
+        reason = ota_boot_error_reason(manifest.install_error);
+    } else {
+        status = "OTA_INSTALL_FAILED";
+        reason = "bootloader_unknown_result";
+    }
+
+    ok = publish_ota_status((const char *)manifest.deployment_id,
+                            status,
+                            "BOOT",
+                            100,
+                            (const char *)manifest.target_version,
+                            reason);
+    comm_manager_report_publish_result(ok);
+
+    if (ok) {
+        (void)ota_clear_manifest();
+        s_ota_boot_result_seen_empty = 1U;
+    }
+
+    return ok;
 }
 
 static uint8_t handle_ota_cjson(cJSON *root)
@@ -166,21 +532,33 @@ static uint8_t handle_ota_cjson(cJSON *root)
     int size = json_int_or(root, "size", 0);
 
     if (deployment_id[0] == '\0') {
-        publish_ota_status("unknown",
-                           "OTA_REJECTED",
-                           "VALIDATE",
-                           0,
-                           target_version,
-                           "missing_deploymentId");
+        (void)publish_ota_status_reported("unknown",
+                                          "OTA_REJECTED",
+                                          "VALIDATE",
+                                          0,
+                                          target_version,
+                                          "missing_deploymentId");
         return 1U;
     }
 
-    publish_ota_status(deployment_id,
-                       "OTA_RECEIVED",
-                       "RECEIVE",
-                       0,
-                       target_version,
-                       "received");
+    if (!publish_ota_status_reported(deployment_id,
+                                     "OTA_RECEIVED",
+                                     "RECEIVE",
+                                     0,
+                                     target_version,
+                                     "received")) {
+        return 1U;
+    }
+
+    if (s_ota_busy) {
+        (void)publish_ota_status_reported(deployment_id,
+                                          "OTA_REJECTED",
+                                          "VALIDATE",
+                                          0,
+                                          target_version,
+                                          "ota_busy");
+        return 1U;
+    }
 
     if (target_version[0] == '\0' ||
         device_model[0] == '\0' ||
@@ -188,45 +566,154 @@ static uint8_t handle_ota_cjson(cJSON *root)
         artifact_url[0] == '\0' ||
         sha256[0] == '\0' ||
         size <= 0) {
-        publish_ota_status(deployment_id,
-                           "OTA_REJECTED",
-                           "VALIDATE",
-                           0,
-                           target_version,
-                           "missing_required_field");
+        (void)publish_ota_status_reported(deployment_id,
+                                          "OTA_REJECTED",
+                                          "VALIDATE",
+                                          0,
+                                          target_version,
+                                          "missing_required_field");
         return 1U;
     }
 
     if (strcmp(device_model, APP_DEVICE_MODEL) != 0) {
-        publish_ota_status(deployment_id,
-                           "OTA_REJECTED",
-                           "VALIDATE",
-                           0,
-                           target_version,
-                           "device_model_mismatch");
+        (void)publish_ota_status_reported(deployment_id,
+                                          "OTA_REJECTED",
+                                          "VALIDATE",
+                                          0,
+                                          target_version,
+                                          "device_model_mismatch");
         return 1U;
     }
 
     if (strcmp(pcb_revision, APP_PCB_REVISION) != 0) {
-        publish_ota_status(deployment_id,
-                           "OTA_REJECTED",
-                           "VALIDATE",
-                           0,
-                           target_version,
-                           "pcb_revision_mismatch");
+        (void)publish_ota_status_reported(deployment_id,
+                                          "OTA_REJECTED",
+                                          "VALIDATE",
+                                          0,
+                                          target_version,
+                                          "pcb_revision_mismatch");
         return 1U;
     }
 
-    /*
-     * Download/install is intentionally not enabled yet. The next OTA phase
-     * should add W25Q staging + SHA256 verification + bootloader handoff.
-     */
-    publish_ota_status(deployment_id,
-                       "OTA_REJECTED",
-                       "VALIDATE",
-                       0,
-                       target_version,
-                       "ota_download_not_implemented");
+    const char *url_reject_reason = NULL;
+    if (!ota_url_is_supported(artifact_url, &url_reject_reason)) {
+        (void)publish_ota_status_reported(deployment_id,
+                                          "OTA_REJECTED",
+                                          "VALIDATE",
+                                          0,
+                                          target_version,
+                                          url_reject_reason);
+        return 1U;
+    }
+
+    if (!s_ota_flash) {
+        (void)publish_ota_status_reported(deployment_id,
+                                          "OTA_REJECTED",
+                                          "VALIDATE",
+                                          0,
+                                          target_version,
+                                          "ota_flash_not_ready");
+        return 1U;
+    }
+
+    if ((uint32_t)size > OTA_STAGING_MAX_SIZE ||
+        (uint32_t)size > APP_OTA_APPLICATION_SIZE) {
+        (void)publish_ota_status_reported(deployment_id,
+                                          "OTA_REJECTED",
+                                          "VALIDATE",
+                                          0,
+                                          target_version,
+                                          "artifact_too_large");
+        return 1U;
+    }
+
+    if (!publish_ota_status_reported(deployment_id,
+                                     "OTA_DOWNLOAD_STARTED",
+                                     "DOWNLOAD",
+                                     1,
+                                     target_version,
+                                     "staging_to_external_flash")) {
+        return 1U;
+    }
+
+    uint32_t downloaded_size = 0U;
+    char downloaded_sha256[65] = {0};
+    ota_progress_ctx_t progress = {0U};
+
+    s_ota_busy = 1U;
+    app_debug_led_set_ota_active(1U);
+    uint8_t download_ok = modem_tcp_http_download_to_w25q(artifact_url,
+                                                          s_ota_flash,
+                                                          OTA_STAGING_BASE_ADDR,
+                                                          OTA_STAGING_MAX_SIZE,
+                                                          (uint32_t)size,
+                                                          sha256,
+                                                          &downloaded_size,
+                                                          downloaded_sha256,
+                                                          ota_download_progress,
+                                                          &progress);
+    app_debug_led_set_ota_active(0U);
+    s_ota_busy = 0U;
+
+    if (!download_ok) {
+        const char *fail_reason = modem_http_download_last_error();
+        if (!fail_reason || !fail_reason[0] || strcmp(fail_reason, "none") == 0) {
+            fail_reason = "download_or_verify_failed";
+        }
+        (void)publish_ota_status_reported(deployment_id,
+                                          "OTA_DOWNLOAD_FAILED",
+                                          "DOWNLOAD",
+                                          (int)progress.last_percent,
+                                          target_version,
+                                          fail_reason);
+        return 1U;
+    }
+
+    uint8_t ack_ok = publish_ota_status_reported(deployment_id,
+                                                 "OTA_DOWNLOAD_COMPLETE",
+                                                 "DOWNLOAD",
+                                                 100,
+                                                 target_version,
+                                                 "downloaded_to_w25q");
+    if (!ack_ok) {
+        return 1U;
+    }
+
+    ack_ok = publish_ota_status_reported(deployment_id,
+                                         "OTA_VERIFY_OK",
+                                         "VERIFY",
+                                         100,
+                                         target_version,
+                                         downloaded_sha256);
+    if (!ack_ok) {
+        return 1U;
+    }
+
+    if (!ota_write_pending_manifest(downloaded_size,
+                                    downloaded_sha256,
+                                    deployment_id,
+                                    target_version)) {
+        (void)publish_ota_status_reported(deployment_id,
+                                          "OTA_INSTALL_FAILED",
+                                          "MANIFEST",
+                                          100,
+                                          target_version,
+                                          "manifest_write_failed");
+        return 1U;
+    }
+
+    ack_ok = publish_ota_status_reported(deployment_id,
+                                         "OTA_INSTALLING",
+                                         "RESET",
+                                         100,
+                                         target_version,
+                                         "bootloader_install_scheduled");
+    if (!ack_ok) {
+        return 1U;
+    }
+
+    osDelay(1500U);
+    NVIC_SystemReset();
 
     return 1U;
 }
@@ -801,14 +1288,19 @@ char* MQTT_Subscriber_Run(void)
 
     // 4. Read the EXACT number of bytes.
     // Do NOT use read_line here. Newlines in JSON will break it.
-    int got = u2_read_exact((uint8_t*)payload, reported_len, 5000);
+    int got = u2_read_exact((uint8_t*)payload, reported_len, 10000);
     payload[got] = 0; // Manual null termination
 
     // 5. Check for footer
     (void)u2rx_wait_for(&g_u2rx, "+CMQTTRXEND", 500);
 
     print("[MQTT RX] Total Expected: %d, Actually Read: %d\r\n", reported_len, got);
-    return (got > 0) ? payload : NULL;
+    if (got != reported_len) {
+        print("[MQTT RX][ERR] incomplete payload discarded\r\n");
+        return NULL;
+    }
+
+    return payload;
 }
 
 static void publish_actuation_ack(const char *actuation_id,
@@ -914,22 +1406,26 @@ void handle_downlink_cjson(const char *payload_str)
     }
 
     cJSON *msg = cJSON_GetObjectItem(root, "type");
+    const char *type_str = cJSON_IsString(msg) ? json_trimmed_str_or_empty(root, "type") : "";
 
-    if (cJSON_IsString(msg) && strcmp(msg->valuestring, "actuation") == 0)
+    if (json_type_equals(type_str, "actuation"))
     {
         handle_actuation_cjson(root);
         cJSON_Delete(root);
         return;
     }
 
-    if (cJSON_IsString(msg) && strcmp(msg->valuestring, "ota") == 0)
+    if (json_type_equals(type_str, "ota"))
     {
         handle_ota_cjson(root);
         cJSON_Delete(root);
         return;
     }
 
-    if (!cJSON_IsString(msg) || strcmp(msg->valuestring, "config") != 0) {
+    if (!json_type_equals(type_str, "config")) {
+        print("[DOWNLINK][ERR] unsupported type='%s'\r\n",
+              type_str[0] ? type_str : "(missing/non-string)");
+
         app_log_push(APP_LOG_WARN,
                      "DOWNLINK",
                      "UNKNOWN_TYPE",

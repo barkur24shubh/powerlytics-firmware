@@ -45,6 +45,7 @@
 
 /* GSM / MQTT */
 #include "uart2_rx_engine.h"
+#include "mqtt_handler.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -310,6 +311,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   debug_uart_init(&huart1);
   debug_uart_set_sink(app_sd_terminal_log_sink);
+  debug_uart_force_enabled_for(60000U);
   HAL_Delay(100);
 
   app_gateway_print_reset_reason();
@@ -337,6 +339,7 @@ int main(void)
 
   app_gateway_flash_setup(&s_flash, &hspi1, GPIOB, GPIO_PIN_0);
   app_gateway_flash_test(&s_flash);
+  MQTT_SetOtaFlash(&s_flash);
 
   modbus_cfg_t cfg_from_flash;
   bool cfg_ok = modbus_cfg_load(&cfg_from_flash);

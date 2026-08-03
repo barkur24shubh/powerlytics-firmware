@@ -1,13 +1,6 @@
 #include "sha256.h"
 #include <string.h>
 
-typedef struct {
-  uint32_t state[8];
-  uint64_t bitlen;
-  uint8_t data[64];
-  uint32_t datalen;
-} sha256_ctx_t;
-
 static uint32_t rotr(uint32_t a, uint32_t b) { return (a >> b) | (a << (32 - b)); }
 static uint32_t ch(uint32_t x,uint32_t y,uint32_t z){ return (x & y) ^ (~x & z); }
 static uint32_t maj(uint32_t x,uint32_t y,uint32_t z){ return (x & y) ^ (x & z) ^ (y & z); }
@@ -49,7 +42,7 @@ static void sha256_transform(sha256_ctx_t *ctx, const uint8_t data[])
   ctx->state[4]+=e; ctx->state[5]+=f; ctx->state[6]+=g; ctx->state[7]+=h;
 }
 
-static void sha256_init(sha256_ctx_t *ctx)
+void sha256_init(sha256_ctx_t *ctx)
 {
   ctx->datalen = 0;
   ctx->bitlen = 0;
@@ -59,7 +52,7 @@ static void sha256_init(sha256_ctx_t *ctx)
   ctx->state[6]=0x1f83d9ab; ctx->state[7]=0x5be0cd19;
 }
 
-static void sha256_update(sha256_ctx_t *ctx, const uint8_t *data, size_t len)
+void sha256_update(sha256_ctx_t *ctx, const uint8_t *data, size_t len)
 {
   for (size_t i = 0; i < len; i++) {
     ctx->data[ctx->datalen++] = data[i];
@@ -71,7 +64,7 @@ static void sha256_update(sha256_ctx_t *ctx, const uint8_t *data, size_t len)
   }
 }
 
-static void sha256_final(sha256_ctx_t *ctx, uint8_t hash[])
+void sha256_final(sha256_ctx_t *ctx, uint8_t hash[32])
 {
   uint32_t i = ctx->datalen;
 
@@ -102,13 +95,10 @@ static void sha256_final(sha256_ctx_t *ctx, uint8_t hash[])
   }
 }
 
-void sha256_hex(const uint8_t *data, size_t len, char out_hex[65])
+void sha256_final_hex(sha256_ctx_t *ctx, char out_hex[65])
 {
   uint8_t hash[32];
-  sha256_ctx_t ctx;
-  sha256_init(&ctx);
-  sha256_update(&ctx, data, len);
-  sha256_final(&ctx, hash);
+  sha256_final(ctx, hash);
 
   static const char hex[] = "0123456789abcdef";
   for (int i = 0; i < 32; i++) {
@@ -116,4 +106,12 @@ void sha256_hex(const uint8_t *data, size_t len, char out_hex[65])
     out_hex[i*2+1] = hex[hash[i] & 0xF];
   }
   out_hex[64] = '\0';
+}
+
+void sha256_hex(const uint8_t *data, size_t len, char out_hex[65])
+{
+  sha256_ctx_t ctx;
+  sha256_init(&ctx);
+  sha256_update(&ctx, data, len);
+  sha256_final_hex(&ctx, out_hex);
 }

@@ -19,12 +19,16 @@
 #define DOWNLINK_BLINK_ON_MS      500UL
 #define DOWNLINK_BLINK_OFF_MS     250UL
 
+#define OTA_BLINK_PERIOD_MS       160UL
+#define OTA_BLINK_ON_MS           80UL
+
 typedef enum
 {
     LED_MODE_HEARTBEAT = 0,
     LED_MODE_HEARTBEAT_PULSE,
     LED_MODE_UPLINK,
     LED_MODE_DOWNLINK,
+    LED_MODE_OTA,
     LED_MODE_ERROR_SOLID
 } led_mode_t;
 
@@ -32,6 +36,7 @@ static led_mode_t s_mode = LED_MODE_HEARTBEAT;
 static uint32_t s_mode_start_tick = 0;
 static uint32_t s_last_heartbeat_tick = 0;
 static uint8_t s_error_active = 0;
+static uint8_t s_ota_active = 0;
 
 static void led_write(uint8_t on)
 {
@@ -65,6 +70,33 @@ void app_debug_led_init(void)
     s_mode_start_tick = HAL_GetTick();
     s_last_heartbeat_tick = HAL_GetTick();
     s_error_active = 0;
+    s_ota_active = 0;
+}
+
+void app_debug_led_set_ota_active(uint8_t active)
+{
+    uint32_t now = HAL_GetTick();
+
+    s_ota_active = active ? 1U : 0U;
+
+    if (s_error_active)
+    {
+        return;
+    }
+
+    if (s_ota_active)
+    {
+        s_mode = LED_MODE_OTA;
+        s_mode_start_tick = now;
+        led_write(1);
+    }
+    else if (s_mode == LED_MODE_OTA)
+    {
+        s_mode = LED_MODE_HEARTBEAT;
+        s_mode_start_tick = now;
+        s_last_heartbeat_tick = now;
+        led_write(0);
+    }
 }
 
 void app_debug_led_event(debug_led_event_t event)
@@ -75,6 +107,7 @@ void app_debug_led_event(debug_led_event_t event)
     {
         case DEBUG_LED_EVENT_ERROR_ON:
             s_error_active = 1;
+            s_ota_active = 0;
             s_mode = LED_MODE_ERROR_SOLID;
             s_mode_start_tick = now;
             led_write(1);
@@ -82,9 +115,9 @@ void app_debug_led_event(debug_led_event_t event)
 
         case DEBUG_LED_EVENT_ERROR_OFF:
             s_error_active = 0;
-            s_mode = LED_MODE_HEARTBEAT;
+            s_mode = s_ota_active ? LED_MODE_OTA : LED_MODE_HEARTBEAT;
             s_mode_start_tick = now;
-            led_write(0);
+            led_write(s_ota_active ? 1U : 0U);
             break;
 
         case DEBUG_LED_EVENT_UPLINK:
@@ -122,6 +155,13 @@ void app_debug_led_run_once(void)
         s_mode = LED_MODE_ERROR_SOLID;
         led_write(1);
         return;
+    }
+
+    if (s_ota_active && s_mode != LED_MODE_OTA)
+    {
+        s_mode = LED_MODE_OTA;
+        s_mode_start_tick = now;
+        elapsed = 0U;
     }
 
     switch (s_mode)
@@ -170,6 +210,14 @@ void app_debug_led_run_once(void)
                 s_mode_start_tick = now;
             }
             break;
+
+        case LED_MODE_OTA:
+        {
+            uint32_t phase = elapsed % OTA_BLINK_PERIOD_MS;
+            led_write((phase < OTA_BLINK_ON_MS) ? 1U : 0U);
+            break;
+        }
+
         case LED_MODE_HEARTBEAT_PULSE:
             if (elapsed < HEARTBEAT_ON_MS)
             {

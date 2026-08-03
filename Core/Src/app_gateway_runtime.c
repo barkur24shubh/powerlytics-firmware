@@ -266,6 +266,12 @@ static void app_gateway_online_idle_for(uint32_t wait_ms)
             return;
         }
 
+        if (MQTT_OtaIsBusy())
+        {
+            osDelay(100U);
+            continue;
+        }
+
         if (process_downlink_once("DOWNLINK IDLE"))
         {
             continue;
@@ -329,6 +335,13 @@ void app_gateway_runtime_task(void *argument)
         app_watchdog_refresh();
 
         comm_manager_run_once();
+
+        if (MQTT_OtaIsBusy())
+        {
+            osDelay(100U);
+            continue;
+        }
+
         app_memory_monitor_once();
         app_sd_telemetry_service();
         app_sd_terminal_log_service();
@@ -358,6 +371,12 @@ void app_gateway_runtime_task(void *argument)
         }
 
         app_debug_led_event(DEBUG_LED_EVENT_ERROR_OFF);
+
+        /*
+         * If the bootloader has just installed an OTA image, report that only
+         * after MQTT is online. The manifest is cleared only after publish ACK.
+         */
+        (void)MQTT_ReportOtaBootResultOnce();
 
         /*
          * Priority 1: downlink/config/command always wins.

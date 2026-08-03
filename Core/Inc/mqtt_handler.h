@@ -2,6 +2,7 @@
 #define MQTT_HANDLER_H
 
 #include "stm32f4xx_hal.h"
+#include "w25q16.h"
 #include <stdint.h>
 
 /* Public API */
@@ -22,5 +23,8 @@ uint8_t MQTT_Maintain(uint32_t keepalive_ms,
                       uint8_t *attempted);
 uint8_t MQTT_LastPublishAttempted(void);
 const char *MQTT_LastPublishStage(void);
+void    MQTT_SetOtaFlash(W25Q_Handle *flash);
+uint8_t MQTT_OtaIsBusy(void);
+uint8_t MQTT_ReportOtaBootResultOnce(void);
 
 #endif

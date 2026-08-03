@@ -7,6 +7,7 @@
 #include "app_debug_led.h"
 #include "app_log.h"
 #include "app_watchdog.h"
+#include "sha256.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -79,6 +80,1512 @@ static void trim_crlf(char *s)
         s[n-1] = 0;
         n--;
     }
+}
+
+/* ================= OTA HTTP DOWNLOAD ================= */
+#define HTTP_OTA_CMD_MAX       2300U
+#define HTTP_OTA_CHUNK_SIZE    512U
+/*
+ * A failed binary HTTPREAD can leave late payload bytes in the modem UART.
+ * Retrying the same HTTPREAD inside that response risks corrupting the staged
+ * image, so OTA retries happen by reopening a fresh HTTP range instead.
+ */
+#define HTTP_OTA_CHUNK_RETRIES        1U
+#define HTTP_OTA_RANGE_OPEN_RETRIES   3U
+#define HTTP_OTA_RANGE_STATUS_RETRIES 8U
+#define HTTP_OTA_RANGE_READ_RETRIES   4U
+#define HTTP_OTA_RANGE_WINDOW  32768U
+#define HTTP_OTA_USE_RANGE_WINDOWS    0U
+#define HTTP_OTA_ACTION_MS     120000UL
+#define HTTP_OTA_READ_MS       30000UL
+#define HTTP_OTA_TAIL_WAIT_MS  80UL
+#define HTTP_OTA_TAIL_SLICE_MS 20UL
+#define HTTP_OTA_ABORT_DRAIN_MS 1200UL
+#define HTTP_OTA_ABORT_QUIET_MS 250UL
+#define HTTP_OTA_DEBUG_PRINT   0U
+
+#define HTTP_OTA_LOG(...) do { if (HTTP_OTA_DEBUG_PRINT) { print(__VA_ARGS__); } } while (0)
+
+#define TCP_OTA_SOCKET_ID       1U
+#define TCP_OTA_RANGE_SIZE      4096U
+#define TCP_OTA_RX_READ_SIZE    512U
+#define TCP_OTA_HEADER_MAX      1024U
+#define TCP_OTA_CHUNK_RETRIES   6U
+#define TCP_OTA_CONNECT_MS      45000UL
+#define TCP_OTA_RESPONSE_MS     45000UL
+#define TCP_OTA_MUTEX_WAIT_MS   10000UL
+#define TCP_OTA_TOTAL_MAX_MS    1800000UL
+#define TCP_OTA_DEBUG_PRINT     0U
+#define TCP_OTA_DOUBLE_READ_VERIFY 1U
+
+#define TCP_OTA_LOG(...) do { if (TCP_OTA_DEBUG_PRINT) { print(__VA_ARGS__); } } while (0)
+
+static char s_http_ota_cmd[HTTP_OTA_CMD_MAX];
+static uint8_t s_http_ota_chunk[HTTP_OTA_CHUNK_SIZE];
+static uint8_t s_tcp_ota_range_buf[TCP_OTA_RANGE_SIZE];
+static uint8_t s_tcp_ota_verify_buf[TCP_OTA_RANGE_SIZE];
+static uint8_t s_tcp_ota_rx_buf[TCP_OTA_RX_READ_SIZE];
+static const char *s_http_ota_last_error = "none";
+static char s_http_ota_last_error_buf[40];
+
+static void modem_http_set_last_error(const char *reason)
+{
+    s_http_ota_last_error = (reason && reason[0]) ? reason : "unknown";
+}
+
+static void modem_http_set_last_error_status(const char *prefix, int status)
+{
+    snprintf(s_http_ota_last_error_buf,
+             sizeof(s_http_ota_last_error_buf),
+             "%s_%d",
+             (prefix && prefix[0]) ? prefix : "status",
+             status);
+    s_http_ota_last_error = s_http_ota_last_error_buf;
+}
+
+const char *modem_http_download_last_error(void)
+{
+    return s_http_ota_last_error;
+}
+
+static void modem_http_kick_watchdog(void)
+{
+    app_watchdog_mark_task(APP_WATCHDOG_TASK_RUNTIME);
+    app_debug_led_run_once();
+    app_watchdog_refresh();
+}
+
+static uint8_t modem_http_mutex_acquire_with_watchdog(uint32_t timeout_ms)
+{
+    uint32_t start = HAL_GetTick();
+
+    if (!g_at_mutex) {
+        return 1U;
+    }
+
+    while ((HAL_GetTick() - start) < timeout_ms) {
+        modem_http_kick_watchdog();
+        if (osMutexAcquire(g_at_mutex, 250U) == osOK) {
+            return 1U;
+        }
+    }
+
+    modem_http_set_last_error("tcp_mutex_timeout");
+    return 0U;
+}
+
+static uint8_t modem_http_send_wait_ok_locked(const char *cmd,
+                                              const char *expected,
+                                              uint32_t timeout_ms)
+{
+    char line[256];
+    uint8_t expected_seen = (expected == NULL) ? 1U : 0U;
+    uint32_t t0 = HAL_GetTick();
+
+    if (!cmd || !cmd[0]) {
+        return 0U;
+    }
+
+    HTTP_OTA_LOG("[HTTP->GSM] %s\r\n", cmd);
+    u2_send_cmd(cmd);
+
+    while ((HAL_GetTick() - t0) < timeout_ms) {
+        modem_http_kick_watchdog();
+
+        uint32_t elapsed = HAL_GetTick() - t0;
+        uint32_t remain = (elapsed < timeout_ms) ? (timeout_ms - elapsed) : 0U;
+        uint32_t slice = (remain > 250U) ? 250U : remain;
+        int n = u2rx_read_line(&g_u2rx, line, (int)sizeof(line), slice);
+
+        if (n <= 0) {
+            osDelay(1);
+            continue;
+        }
+
+        trim_crlf(line);
+        if (!line[0]) {
+            continue;
+        }
+
+        HTTP_OTA_LOG("[GSM->HTTP] %s\r\n", line);
+
+        if (!strcmp(line, cmd)) {
+            continue;
+        }
+
+        if (!expected_seen && expected && strstr(line, expected)) {
+            expected_seen = 1U;
+        }
+
+        if (strstr(line, "ERROR") || strstr(line, "+CME ERROR")) {
+            return 0U;
+        }
+
+        if (!strcmp(line, "OK")) {
+            return expected_seen;
+        }
+    }
+
+    HTTP_OTA_LOG("[HTTP] timeout waiting OK for %s\r\n", cmd);
+    return 0U;
+}
+
+static void modem_http_drain_until_quiet_locked(uint32_t max_ms,
+                                                uint32_t quiet_ms)
+{
+    uint8_t discard[64];
+    uint32_t start = HAL_GetTick();
+    uint32_t last_data = start;
+
+    for (;;) {
+        modem_http_kick_watchdog();
+
+        size_t avail = u2rx_available(&g_u2rx);
+        if (avail > 0U) {
+            if (avail > sizeof(discard)) {
+                avail = sizeof(discard);
+            }
+            (void)u2rx_read(&g_u2rx, discard, avail);
+            last_data = HAL_GetTick();
+            continue;
+        }
+
+        uint32_t now = HAL_GetTick();
+        if ((now - start) >= max_ms || (now - last_data) >= quiet_ms) {
+            break;
+        }
+
+        if (g_u2rx.rxSem) {
+            (void)osSemaphoreAcquire(g_u2rx.rxSem, 20);
+        } else {
+            osDelay(5);
+        }
+    }
+}
+
+static void modem_http_abort_response_locked(void)
+{
+    (void)modem_http_send_wait_ok_locked("AT+HTTPTERM", NULL, 5000U);
+    modem_http_drain_until_quiet_locked(HTTP_OTA_ABORT_DRAIN_MS,
+                                        HTTP_OTA_ABORT_QUIET_MS);
+    u2_flush_all();
+}
+
+static int modem_http_wait_action_locked(uint32_t timeout_ms,
+                                         int *out_status,
+                                         uint32_t *out_len)
+{
+    char line[160];
+    uint32_t t0 = HAL_GetTick();
+
+    while ((HAL_GetTick() - t0) < timeout_ms) {
+        modem_http_kick_watchdog();
+
+        uint32_t elapsed = HAL_GetTick() - t0;
+        uint32_t remain = (elapsed < timeout_ms) ? (timeout_ms - elapsed) : 0U;
+        uint32_t slice = (remain > 500U) ? 500U : remain;
+        int n = u2rx_read_line(&g_u2rx, line, (int)sizeof(line), slice);
+
+        if (n <= 0) {
+            osDelay(1);
+            continue;
+        }
+
+        trim_crlf(line);
+        if (!line[0]) {
+            continue;
+        }
+
+        HTTP_OTA_LOG("[GSM->HTTP] %s\r\n", line);
+
+        char *p = strstr(line, "+HTTPACTION:");
+        if (p) {
+            int method = -1;
+            int status = 0;
+            unsigned long len = 0;
+
+            if (sscanf(p, "+HTTPACTION: %d,%d,%lu", &method, &status, &len) == 3 &&
+                method == 0) {
+                if (out_status) {
+                    *out_status = status;
+                }
+                if (out_len) {
+                    *out_len = (uint32_t)len;
+                }
+                return 1;
+            }
+        }
+
+        if (strstr(line, "ERROR") || strstr(line, "+CME ERROR")) {
+            return 0;
+        }
+    }
+
+    HTTP_OTA_LOG("[HTTP] no HTTPACTION URC\r\n");
+    return 0;
+}
+
+static uint8_t modem_http_start_request_locked(const char *url,
+                                               uint8_t use_range,
+                                               uint32_t range_start,
+                                               uint32_t range_len,
+                                               int *out_status,
+                                               uint32_t *out_len)
+{
+    (void)modem_http_send_wait_ok_locked("AT+HTTPTERM", NULL, 5000U);
+
+    if (!modem_http_send_wait_ok_locked("AT+HTTPINIT", NULL, 10000U)) {
+        HTTP_OTA_LOG("[OTA][HTTP] HTTPINIT failed\r\n");
+        return 0U;
+    }
+
+    (void)modem_http_send_wait_ok_locked("AT+HTTPPARA=\"CID\",1", NULL, 5000U);
+
+    if (!strncmp(url, "https://", 8U)) {
+        if (!modem_http_send_wait_ok_locked("AT+HTTPSSL=1", NULL, 5000U)) {
+            HTTP_OTA_LOG("[OTA][HTTP] HTTPSSL enable failed/unsupported\r\n");
+            return 0U;
+        }
+    }
+
+    snprintf(s_http_ota_cmd,
+             sizeof(s_http_ota_cmd),
+             "AT+HTTPPARA=\"URL\",\"%s\"",
+             url);
+
+    if (!modem_http_send_wait_ok_locked(s_http_ota_cmd, NULL, 15000U)) {
+        HTTP_OTA_LOG("[OTA][HTTP] set URL failed\r\n");
+        return 0U;
+    }
+
+    if (use_range) {
+        uint32_t range_end = range_start + range_len - 1U;
+        snprintf(s_http_ota_cmd,
+                 sizeof(s_http_ota_cmd),
+                 "AT+HTTPPARA=\"USERDATA\",\"Range: bytes=%lu-%lu\"",
+                 (unsigned long)range_start,
+                 (unsigned long)range_end);
+
+        if (!modem_http_send_wait_ok_locked(s_http_ota_cmd, NULL, 5000U)) {
+            HTTP_OTA_LOG("[OTA][HTTP] set Range header failed\r\n");
+            return 0U;
+        }
+    }
+
+    u2_flush_all();
+    if (!modem_http_send_wait_ok_locked("AT+HTTPACTION=0", NULL, 5000U)) {
+        HTTP_OTA_LOG("[OTA][HTTP] HTTPACTION command failed\r\n");
+        return 0U;
+    }
+
+    if (!modem_http_wait_action_locked(HTTP_OTA_ACTION_MS,
+                                       out_status,
+                                       out_len)) {
+        return 0U;
+    }
+
+    HTTP_OTA_LOG("[OTA][HTTP] action status=%d len=%lu%s\r\n",
+                 out_status ? *out_status : 0,
+                 (unsigned long)(out_len ? *out_len : 0U),
+                 use_range ? " range" : "");
+
+    return 1U;
+}
+
+static size_t modem_http_read_exact_locked(uint8_t *buf,
+                                           size_t len,
+                                           uint32_t timeout_ms)
+{
+    size_t done = 0U;
+    uint32_t t0 = HAL_GetTick();
+
+    while (done < len && (HAL_GetTick() - t0) < timeout_ms) {
+        modem_http_kick_watchdog();
+
+        size_t avail = u2rx_available(&g_u2rx);
+        if (avail == 0U) {
+            if (g_u2rx.rxSem) {
+                (void)osSemaphoreAcquire(g_u2rx.rxSem, 50);
+            } else {
+                osDelay(1);
+            }
+            continue;
+        }
+
+        size_t want = len - done;
+        if (want > avail) {
+            want = avail;
+        }
+
+        done += u2rx_read(&g_u2rx, &buf[done], want);
+    }
+
+    return done;
+}
+
+static int modem_http_read_chunk_locked(uint32_t offset,
+                                        uint32_t want,
+                                        uint8_t *buf,
+                                        uint32_t buf_size,
+                                        uint32_t timeout_ms)
+{
+    char line[128];
+    uint32_t t0 = HAL_GetTick();
+
+    if (!buf || want == 0U || want > buf_size) {
+        return -1;
+    }
+
+    snprintf(s_http_ota_cmd,
+             sizeof(s_http_ota_cmd),
+             "AT+HTTPREAD=%lu,%lu",
+             (unsigned long)offset,
+             (unsigned long)want);
+
+    HTTP_OTA_LOG("[HTTP->GSM] %s\r\n", s_http_ota_cmd);
+    u2_send_cmd(s_http_ota_cmd);
+
+    while ((HAL_GetTick() - t0) < timeout_ms) {
+        modem_http_kick_watchdog();
+
+        uint32_t elapsed = HAL_GetTick() - t0;
+        uint32_t remain = (elapsed < timeout_ms) ? (timeout_ms - elapsed) : 0U;
+        uint32_t slice = (remain > 250U) ? 250U : remain;
+        int n = u2rx_read_line(&g_u2rx, line, (int)sizeof(line), slice);
+
+        if (n <= 0) {
+            osDelay(1);
+            continue;
+        }
+
+        trim_crlf(line);
+        if (!line[0]) {
+            continue;
+        }
+
+        HTTP_OTA_LOG("[GSM->HTTP] %s\r\n", line);
+
+        if (!strcmp(line, s_http_ota_cmd)) {
+            continue;
+        }
+
+        /*
+         * Some SIMCom firmwares acknowledge AT+HTTPREAD with OK first, then
+         * emit +HTTPREAD:<len> and the data. The payload header is what starts
+         * the binary read, so a leading OK is not a completion condition here.
+         */
+        if (!strcmp(line, "OK")) {
+            continue;
+        }
+
+        char *p = strstr(line, "+HTTPREAD:");
+        if (p) {
+            unsigned long body_len = 0;
+
+            if (sscanf(p, "+HTTPREAD: DATA,%lu", &body_len) != 1 &&
+                sscanf(p, "+HTTPREAD: %lu", &body_len) != 1) {
+                return -1;
+            }
+
+            if (body_len > buf_size) {
+                return -1;
+            }
+
+            if (body_len == 0UL) {
+                continue;
+            }
+
+            size_t got = modem_http_read_exact_locked(buf,
+                                                      (size_t)body_len,
+                                                      timeout_ms);
+            if (got != (size_t)body_len) {
+                HTTP_OTA_LOG("[HTTP] chunk body timeout got=%lu want=%lu\r\n",
+                             (unsigned long)got,
+                             body_len);
+                return -1;
+            }
+
+            uint32_t ok_start = HAL_GetTick();
+            while ((HAL_GetTick() - ok_start) < HTTP_OTA_TAIL_WAIT_MS) {
+                modem_http_kick_watchdog();
+                int ok_n = u2rx_read_line(&g_u2rx,
+                                          line,
+                                          (int)sizeof(line),
+                                          HTTP_OTA_TAIL_SLICE_MS);
+                if (ok_n <= 0) {
+                    osDelay(1);
+                    continue;
+                }
+
+                trim_crlf(line);
+                if (!line[0]) {
+                    continue;
+                }
+
+                HTTP_OTA_LOG("[GSM->HTTP] %s\r\n", line);
+
+                if (!strcmp(line, "OK")) {
+                    return (int)body_len;
+                }
+
+                /*
+                 * Observed module response after binary payload:
+                 *   OK
+                 *   +HTTPREAD: <len>
+                 *   <binary>
+                 *   +HTTPREAD: 0
+                 * Treat the zero-length marker as successful chunk end.
+                 */
+                if (strstr(line, "+HTTPREAD:")) {
+                    unsigned long tail_len = 1UL;
+                    if ((sscanf(line, "+HTTPREAD: DATA,%lu", &tail_len) == 1 ||
+                         sscanf(line, "+HTTPREAD: %lu", &tail_len) == 1) &&
+                        tail_len == 0UL) {
+                        return (int)body_len;
+                    }
+                }
+
+                if (strstr(line, "ERROR") || strstr(line, "+CME ERROR")) {
+                    return -1;
+                }
+            }
+
+            HTTP_OTA_LOG("[HTTP] chunk complete without tail marker\r\n");
+            return (int)body_len;
+        }
+
+        if (strstr(line, "ERROR") || strstr(line, "+CME ERROR")) {
+            return -1;
+        }
+    }
+
+    HTTP_OTA_LOG("[HTTP] chunk header timeout offset=%lu\r\n", (unsigned long)offset);
+    return -1;
+}
+
+static uint8_t modem_http_sha_matches(const char *expected, const char actual[65])
+{
+    if (!expected || !expected[0]) {
+        return 1U;
+    }
+
+    if (strlen(expected) != 64U) {
+        return 0U;
+    }
+
+    for (uint8_t i = 0; i < 64U; i++) {
+        char a = (char)tolower((unsigned char)expected[i]);
+        char b = (char)tolower((unsigned char)actual[i]);
+        if (a != b) {
+            return 0U;
+        }
+    }
+
+    return 1U;
+}
+
+static void modem_send_raw_locked(const uint8_t *data, uint32_t len)
+{
+    if (!data || len == 0U) {
+        return;
+    }
+
+    (void)HAL_UART_Transmit(&huart6, (uint8_t *)data, (uint16_t)len, 5000U);
+}
+
+static uint8_t modem_tcp_wait_line_contains_locked(const char *needle,
+                                                   uint32_t timeout_ms,
+                                                   char *matched,
+                                                   uint32_t matched_len)
+{
+    char line[192];
+    uint32_t start = HAL_GetTick();
+
+    while ((HAL_GetTick() - start) < timeout_ms) {
+        modem_http_kick_watchdog();
+
+        uint32_t elapsed = HAL_GetTick() - start;
+        uint32_t remain = (elapsed < timeout_ms) ? (timeout_ms - elapsed) : 0U;
+        uint32_t slice = (remain > 500U) ? 500U : remain;
+        int n = u2rx_read_line(&g_u2rx, line, (int)sizeof(line), slice);
+
+        if (n <= 0) {
+            osDelay(1);
+            continue;
+        }
+
+        trim_crlf(line);
+        if (!line[0]) {
+            continue;
+        }
+
+        TCP_OTA_LOG("[TCP<-GSM] %s\r\n", line);
+
+        if (!needle || strstr(line, needle)) {
+            if (matched && matched_len > 0U) {
+                strncpy(matched, line, matched_len - 1U);
+                matched[matched_len - 1U] = '\0';
+            }
+            return 1U;
+        }
+
+        if (strstr(line, "ERROR") || strstr(line, "+CME ERROR")) {
+            if (matched && matched_len > 0U) {
+                strncpy(matched, line, matched_len - 1U);
+                matched[matched_len - 1U] = '\0';
+            }
+            return 0U;
+        }
+    }
+
+    return 0U;
+}
+
+static uint8_t modem_tcp_read_full_line_locked(char *out,
+                                               uint32_t out_len,
+                                               uint32_t timeout_ms)
+{
+    uint32_t start = HAL_GetTick();
+    uint32_t idx = 0U;
+
+    if (!out || out_len < 2U) {
+        return 0U;
+    }
+
+    out[0] = '\0';
+
+    while ((HAL_GetTick() - start) < timeout_ms) {
+        modem_http_kick_watchdog();
+
+        if (u2rx_available(&g_u2rx) == 0U) {
+            if (g_u2rx.rxSem) {
+                (void)osSemaphoreAcquire(g_u2rx.rxSem, 50U);
+            } else {
+                osDelay(1U);
+            }
+            continue;
+        }
+
+        uint8_t ch = 0U;
+        if (u2rx_read(&g_u2rx, &ch, 1U) == 0U) {
+            osDelay(1U);
+            continue;
+        }
+
+        if (ch == '\r') {
+            continue;
+        }
+
+        if (ch == '\n') {
+            if (idx == 0U) {
+                continue;
+            }
+            out[idx] = '\0';
+            TCP_OTA_LOG("[TCP<-GSM] %s\r\n", out);
+            return 1U;
+        }
+
+        if (idx < (out_len - 1U)) {
+            out[idx++] = (char)ch;
+        } else {
+            out[out_len - 1U] = '\0';
+            modem_http_set_last_error("tcp_line_too_long");
+            return 0U;
+        }
+    }
+
+    return 0U;
+}
+
+static uint8_t modem_tcp_send_wait_ok_locked(const char *cmd, uint32_t timeout_ms)
+{
+    if (!cmd || !cmd[0]) {
+        return 0U;
+    }
+
+    TCP_OTA_LOG("[TCP->GSM] %s\r\n", cmd);
+    u2_send_cmd(cmd);
+    return modem_tcp_wait_line_contains_locked("OK", timeout_ms, NULL, 0U);
+}
+
+static void modem_tcp_close_locked(void)
+{
+    snprintf(s_http_ota_cmd,
+             sizeof(s_http_ota_cmd),
+             "AT+CIPCLOSE=%u",
+             (unsigned int)TCP_OTA_SOCKET_ID);
+    (void)modem_tcp_send_wait_ok_locked(s_http_ota_cmd, 5000U);
+    modem_http_drain_until_quiet_locked(1000U, 150U);
+    u2_flush_all();
+}
+
+static uint8_t modem_tcp_parse_url(const char *url,
+                                   char *host,
+                                   uint32_t host_len,
+                                   const char **path)
+{
+    const char *p = NULL;
+    const char *slash = NULL;
+    size_t len = 0U;
+
+    if (!url || strncmp(url, "http://", 7U) != 0 || !host || host_len == 0U || !path) {
+        return 0U;
+    }
+
+    p = url + 7U;
+    slash = strchr(p, '/');
+    if (!slash || slash == p) {
+        return 0U;
+    }
+
+    len = (size_t)(slash - p);
+    if (len >= host_len) {
+        return 0U;
+    }
+
+    memcpy(host, p, len);
+    host[len] = '\0';
+    *path = slash;
+    return 1U;
+}
+
+static uint8_t modem_tcp_open_locked(const char *host, uint16_t port)
+{
+    char line[192];
+
+    (void)modem_tcp_send_wait_ok_locked("AT+NETOPEN", 10000U);
+    (void)modem_tcp_wait_line_contains_locked("+NETOPEN:", 10000U, NULL, 0U);
+    (void)modem_tcp_send_wait_ok_locked("AT+CIPRXGET=1", 5000U);
+    modem_tcp_close_locked();
+
+    snprintf(s_http_ota_cmd,
+             sizeof(s_http_ota_cmd),
+             "AT+CIPOPEN=%u,\"TCP\",\"%s\",%u",
+             (unsigned int)TCP_OTA_SOCKET_ID,
+             host,
+             (unsigned int)port);
+
+    TCP_OTA_LOG("[TCP->GSM] %s\r\n", s_http_ota_cmd);
+    u2_send_cmd(s_http_ota_cmd);
+
+    if (!modem_tcp_wait_line_contains_locked("OK", 10000U, NULL, 0U)) {
+        return 0U;
+    }
+
+    if (!modem_tcp_wait_line_contains_locked("+CIPOPEN:", TCP_OTA_CONNECT_MS, line, sizeof(line))) {
+        modem_http_set_last_error("tcp_open_timeout");
+        return 0U;
+    }
+
+    if (strstr(line, "+CIPOPEN:") && strstr(line, ",0")) {
+        return 1U;
+    }
+
+    modem_http_set_last_error("tcp_open_failed");
+    return 0U;
+}
+
+static uint8_t modem_tcp_send_http_request_locked(const char *request, uint32_t request_len)
+{
+    if (!request || request_len == 0U) {
+        return 0U;
+    }
+
+    snprintf(s_http_ota_cmd,
+             sizeof(s_http_ota_cmd),
+             "AT+CIPSEND=%u,%lu",
+             (unsigned int)TCP_OTA_SOCKET_ID,
+             (unsigned long)request_len);
+
+    TCP_OTA_LOG("[TCP->GSM] %s\r\n", s_http_ota_cmd);
+    u2_send_cmd(s_http_ota_cmd);
+
+    if (!modem_tcp_wait_line_contains_locked(">", 10000U, NULL, 0U)) {
+        modem_http_set_last_error("tcp_send_prompt_timeout");
+        return 0U;
+    }
+
+    modem_send_raw_locked((const uint8_t *)request, request_len);
+
+    if (!modem_tcp_wait_line_contains_locked("OK", 15000U, NULL, 0U)) {
+        modem_http_set_last_error("tcp_send_failed");
+        return 0U;
+    }
+
+    return 1U;
+}
+
+static int modem_tcp_available_locked(void)
+{
+    char line[128];
+    unsigned int link = 0U;
+    unsigned long len = 0UL;
+    uint32_t start = HAL_GetTick();
+
+    snprintf(s_http_ota_cmd,
+             sizeof(s_http_ota_cmd),
+             "AT+CIPRXGET=4,%u",
+             (unsigned int)TCP_OTA_SOCKET_ID);
+
+    u2_send_cmd(s_http_ota_cmd);
+
+    while ((HAL_GetTick() - start) < 5000U) {
+        if (!modem_tcp_read_full_line_locked(line, sizeof(line), 500U)) {
+            continue;
+        }
+
+        if (sscanf(line, "+CIPRXGET: 4,%u,%lu", &link, &len) == 2 &&
+            link == TCP_OTA_SOCKET_ID) {
+            (void)modem_tcp_wait_line_contains_locked("OK", 1000U, NULL, 0U);
+            return (int)len;
+        }
+    }
+
+    return -1;
+}
+
+static int modem_tcp_read_locked(uint8_t *dst, uint32_t want)
+{
+    char line[128];
+    unsigned int mode = 0U;
+    unsigned int link = 0U;
+    unsigned long got = 0UL;
+    unsigned long remain = 0UL;
+    uint32_t start = HAL_GetTick();
+
+    if (!dst || want == 0U || want > TCP_OTA_RX_READ_SIZE) {
+        return -1;
+    }
+
+    snprintf(s_http_ota_cmd,
+             sizeof(s_http_ota_cmd),
+             "AT+CIPRXGET=2,%u,%lu",
+             (unsigned int)TCP_OTA_SOCKET_ID,
+             (unsigned long)want);
+
+    u2_send_cmd(s_http_ota_cmd);
+
+    for (;;) {
+        if ((HAL_GetTick() - start) >= 5000U) {
+            return -1;
+        }
+
+        if (!modem_tcp_read_full_line_locked(line, sizeof(line), 500U)) {
+            continue;
+        }
+
+        if (sscanf(line, "+CIPRXGET: %u,%u,%lu,%lu", &mode, &link, &got, &remain) == 4 &&
+            mode == 2U &&
+            link == TCP_OTA_SOCKET_ID) {
+            break;
+        }
+    }
+
+    if (got > want) {
+        return -1;
+    }
+
+    if (got == 0UL) {
+        (void)modem_tcp_wait_line_contains_locked("OK", 1000U, NULL, 0U);
+        return 0;
+    }
+
+    size_t read = modem_http_read_exact_locked(dst, (size_t)got, 10000U);
+    (void)modem_tcp_wait_line_contains_locked("OK", 3000U, NULL, 0U);
+
+    return (read == (size_t)got) ? (int)got : -1;
+}
+
+static const char *modem_tcp_find_header_value(const char *headers, const char *key)
+{
+    size_t key_len = strlen(key);
+    const char *p = headers;
+
+    while (p && *p) {
+        if ((p == headers || p[-1] == '\n') &&
+            strncmp(p, key, key_len) == 0) {
+            p += key_len;
+            while (*p == ' ' || *p == '\t') {
+                p++;
+            }
+            return p;
+        }
+
+        p = strchr(p, '\n');
+        if (p) {
+            p++;
+        }
+    }
+
+    return NULL;
+}
+
+static uint8_t modem_tcp_http_download_range_locked(const char *host,
+                                                    const char *path,
+                                                    uint32_t start,
+                                                    uint32_t len,
+                                                    uint32_t total_size,
+                                                    uint8_t *out,
+                                                    uint32_t *out_len)
+{
+    char request[512];
+    char headers[TCP_OTA_HEADER_MAX];
+    uint32_t header_len = 0U;
+    uint8_t header_done = 0U;
+    uint32_t body_len = 0U;
+    uint32_t deadline = HAL_GetTick() + TCP_OTA_RESPONSE_MS;
+    int http_status = 0;
+    int content_len = -1;
+    unsigned long cr_start = 0UL;
+    unsigned long cr_end = 0UL;
+    unsigned long cr_total = 0UL;
+
+    if (!host || !path || !out || !out_len || len == 0U || len > TCP_OTA_RANGE_SIZE) {
+        return 0U;
+    }
+
+    *out_len = 0U;
+    memset(headers, 0, sizeof(headers));
+
+    if (!modem_tcp_open_locked(host, 80U)) {
+        return 0U;
+    }
+
+    snprintf(request,
+             sizeof(request),
+             "GET %s HTTP/1.1\r\n"
+             "Host: %s\r\n"
+             "Range: bytes=%lu-%lu\r\n"
+             "Connection: close\r\n"
+             "\r\n",
+             path,
+             host,
+             (unsigned long)start,
+             (unsigned long)(start + len - 1U));
+
+    if (!modem_tcp_send_http_request_locked(request, (uint32_t)strlen(request))) {
+        modem_tcp_close_locked();
+        return 0U;
+    }
+
+    while ((int32_t)(deadline - HAL_GetTick()) > 0 && body_len < len) {
+        modem_http_kick_watchdog();
+
+        int avail = modem_tcp_available_locked();
+        if (avail <= 0) {
+            (void)modem_tcp_wait_line_contains_locked("+CIPRXGET:", 500U, NULL, 0U);
+            osDelay(20U);
+            continue;
+        }
+
+        uint32_t want = (uint32_t)avail;
+        if (want > TCP_OTA_RX_READ_SIZE) {
+            want = TCP_OTA_RX_READ_SIZE;
+        }
+
+        int got = modem_tcp_read_locked(s_tcp_ota_rx_buf, want);
+        if (got <= 0) {
+            osDelay(20U);
+            continue;
+        }
+
+        uint32_t pos = 0U;
+        while (pos < (uint32_t)got) {
+            if (!header_done) {
+                if (header_len >= (sizeof(headers) - 1U)) {
+                    modem_http_set_last_error("tcp_http_header_too_large");
+                    modem_tcp_close_locked();
+                    return 0U;
+                }
+
+                headers[header_len++] = (char)s_tcp_ota_rx_buf[pos++];
+                headers[header_len] = '\0';
+
+                if (header_len >= 4U &&
+                    headers[header_len - 4U] == '\r' &&
+                    headers[header_len - 3U] == '\n' &&
+                    headers[header_len - 2U] == '\r' &&
+                    headers[header_len - 1U] == '\n') {
+                    const char *cl = NULL;
+                    const char *cr = NULL;
+                    header_done = 1U;
+
+                    if (sscanf(headers, "HTTP/%*s %d", &http_status) != 1 ||
+                        http_status != 206) {
+                        modem_http_set_last_error_status("tcp_http_status", http_status);
+                        modem_tcp_close_locked();
+                        return 0U;
+                    }
+
+                    cl = modem_tcp_find_header_value(headers, "Content-Length:");
+                    if (!cl || sscanf(cl, "%d", &content_len) != 1 ||
+                        content_len != (int)len) {
+                        modem_http_set_last_error("tcp_http_len_mismatch");
+                        modem_tcp_close_locked();
+                        return 0U;
+                    }
+
+                    cr = modem_tcp_find_header_value(headers, "Content-Range:");
+                    if (!cr ||
+                        sscanf(cr, "bytes %lu-%lu/%lu", &cr_start, &cr_end, &cr_total) != 3 ||
+                        cr_start != (unsigned long)start ||
+                        cr_end != (unsigned long)(start + len - 1U) ||
+                        cr_total != (unsigned long)total_size) {
+                        modem_http_set_last_error("tcp_content_range_mismatch");
+                        modem_tcp_close_locked();
+                        return 0U;
+                    }
+                }
+            } else {
+                uint32_t copy = (uint32_t)got - pos;
+                if (copy > (len - body_len)) {
+                    copy = len - body_len;
+                }
+
+                memcpy(&out[body_len], &s_tcp_ota_rx_buf[pos], copy);
+                body_len += copy;
+                pos += copy;
+            }
+        }
+    }
+
+    modem_tcp_close_locked();
+
+    if (body_len != len) {
+        print("[OTA][TCP] body timeout start=%lu got=%lu want=%lu hdr=%lu status=%d clen=%d\r\n",
+              (unsigned long)start,
+              (unsigned long)body_len,
+              (unsigned long)len,
+              (unsigned long)header_len,
+              http_status,
+              content_len);
+        modem_http_set_last_error("tcp_body_timeout");
+        return 0U;
+    }
+
+    *out_len = body_len;
+    return 1U;
+}
+
+uint8_t modem_tcp_http_download_to_w25q(const char *url,
+                                        W25Q_Handle *flash,
+                                        uint32_t base_addr,
+                                        uint32_t max_size,
+                                        uint32_t expected_size,
+                                        const char *expected_sha256,
+                                        uint32_t *out_size,
+                                        char out_sha256[65],
+                                        modem_http_download_progress_cb_t progress_cb,
+                                        void *progress_ctx)
+{
+    char host[96];
+    const char *path = NULL;
+    uint32_t written = 0U;
+    uint32_t ota_start = HAL_GetTick();
+    uint8_t ok = 0U;
+    uint8_t mutex_acquired = 0U;
+    sha256_ctx_t sha;
+    char calc_sha256[65] = {0};
+
+    if (out_size) {
+        *out_size = 0U;
+    }
+    if (out_sha256) {
+        out_sha256[0] = '\0';
+    }
+
+    modem_http_set_last_error("none");
+
+    if (!url || !flash || expected_size == 0U || expected_size > max_size) {
+        modem_http_set_last_error("tcp_invalid_args");
+        return 0U;
+    }
+
+    if (!modem_tcp_parse_url(url, host, sizeof(host), &path)) {
+        modem_http_set_last_error("tcp_url_not_supported");
+        return 0U;
+    }
+
+    if (!modem_http_mutex_acquire_with_watchdog(TCP_OTA_MUTEX_WAIT_MS)) {
+        return 0U;
+    }
+    mutex_acquired = (g_at_mutex != NULL) ? 1U : 0U;
+
+    at_rx_active = 1U;
+    u2_flush_all();
+
+    uint32_t erase_len = ((expected_size + W25Q_SECTOR_SIZE - 1U) /
+                          W25Q_SECTOR_SIZE) * W25Q_SECTOR_SIZE;
+
+    print("[OTA][TCP] start host=%s size=%lu chunk=%lu\r\n",
+          host,
+          (unsigned long)expected_size,
+          (unsigned long)TCP_OTA_RANGE_SIZE);
+
+    for (uint32_t off = 0U; off < erase_len; off += W25Q_SECTOR_SIZE) {
+        modem_http_kick_watchdog();
+        if ((HAL_GetTick() - ota_start) >= TCP_OTA_TOTAL_MAX_MS) {
+            modem_http_set_last_error("tcp_total_timeout");
+            goto done;
+        }
+        if (!w25q_erase_sector_4k(flash, base_addr + off)) {
+            modem_http_set_last_error("tcp_flash_erase_failed");
+            goto done;
+        }
+    }
+
+    sha256_init(&sha);
+
+    while (written < expected_size) {
+        if ((HAL_GetTick() - ota_start) >= TCP_OTA_TOTAL_MAX_MS) {
+            modem_http_set_last_error("tcp_total_timeout");
+            goto done;
+        }
+
+        uint32_t range_len = expected_size - written;
+        uint32_t got_len = 0U;
+        uint8_t range_ok = 0U;
+
+        if (range_len > TCP_OTA_RANGE_SIZE) {
+            range_len = TCP_OTA_RANGE_SIZE;
+        }
+
+        for (uint8_t attempt = 1U; attempt <= TCP_OTA_CHUNK_RETRIES; attempt++) {
+            modem_http_kick_watchdog();
+            if ((HAL_GetTick() - ota_start) >= TCP_OTA_TOTAL_MAX_MS) {
+                modem_http_set_last_error("tcp_total_timeout");
+                goto done;
+            }
+
+            print("[OTA][TCP] range %lu-%lu attempt=%u\r\n",
+                  (unsigned long)written,
+                  (unsigned long)(written + range_len - 1U),
+                  (unsigned int)attempt);
+
+            if (modem_tcp_http_download_range_locked(host,
+                                                     path,
+                                                     written,
+                                                     range_len,
+                                                     expected_size,
+                                                     s_tcp_ota_range_buf,
+                                                     &got_len) &&
+                got_len == range_len) {
+#if TCP_OTA_DOUBLE_READ_VERIFY
+                uint32_t verify_len = 0U;
+                if (!modem_tcp_http_download_range_locked(host,
+                                                          path,
+                                                          written,
+                                                          range_len,
+                                                          expected_size,
+                                                          s_tcp_ota_verify_buf,
+                                                          &verify_len) ||
+                    verify_len != range_len ||
+                    memcmp(s_tcp_ota_range_buf, s_tcp_ota_verify_buf, range_len) != 0) {
+                    modem_http_set_last_error("tcp_range_compare_mismatch");
+                    print("[OTA][TCP] range verify mismatch start=%lu len=%lu\r\n",
+                          (unsigned long)written,
+                          (unsigned long)range_len);
+                    modem_tcp_close_locked();
+                    osDelay(300U);
+                    continue;
+                }
+#endif
+                range_ok = 1U;
+                break;
+            }
+
+            print("[OTA][TCP] range retry reason=%s\r\n",
+                  modem_http_download_last_error());
+            modem_tcp_close_locked();
+            osDelay(500U * attempt);
+        }
+
+        if (!range_ok) {
+            goto done;
+        }
+
+        if (!w25q_write(flash,
+                        base_addr + written,
+                        s_tcp_ota_range_buf,
+                        range_len)) {
+            modem_http_set_last_error("tcp_flash_write_failed");
+            goto done;
+        }
+
+        sha256_update(&sha, s_tcp_ota_range_buf, range_len);
+        written += range_len;
+
+        if (progress_cb) {
+            progress_cb(written, expected_size, progress_ctx);
+        }
+    }
+
+    sha256_final_hex(&sha, calc_sha256);
+    if (out_sha256) {
+        strncpy(out_sha256, calc_sha256, 65U);
+        out_sha256[64] = '\0';
+    }
+
+    print("[OTA][TCP] verify size=%lu sha=%s\r\n",
+          (unsigned long)written,
+          calc_sha256);
+
+    if (!modem_http_sha_matches(expected_sha256, calc_sha256)) {
+        modem_http_set_last_error("tcp_sha_mismatch");
+        goto done;
+    }
+
+    if (out_size) {
+        *out_size = written;
+    }
+
+    modem_http_set_last_error("none");
+    ok = 1U;
+
+done:
+    modem_tcp_close_locked();
+    at_rx_active = 0U;
+    if (mutex_acquired) {
+        osMutexRelease(g_at_mutex);
+    }
+
+    print("[OTA][TCP] %s written=%lu reason=%s\r\n",
+          ok ? "OK" : "FAIL",
+          (unsigned long)written,
+          modem_http_download_last_error());
+
+    return ok;
+}
+
+uint8_t modem_http_download_to_w25q(const char *url,
+                                    W25Q_Handle *flash,
+                                    uint32_t base_addr,
+                                    uint32_t max_size,
+                                    uint32_t expected_size,
+                                    const char *expected_sha256,
+                                    uint32_t *out_size,
+                                    char out_sha256[65],
+                                    modem_http_download_progress_cb_t progress_cb,
+                                    void *progress_ctx)
+{
+    uint8_t ok = 0U;
+    int http_status = 0;
+    uint32_t content_len = 0U;
+    uint32_t written = 0U;
+    char calc_sha256[65] = {0};
+    sha256_ctx_t sha;
+
+    if (out_size) {
+        *out_size = 0U;
+    }
+    if (out_sha256) {
+        out_sha256[0] = '\0';
+    }
+
+    if (!url || !url[0] || !flash || max_size == 0U) {
+        HTTP_OTA_LOG("[OTA][HTTP] invalid download args\r\n");
+        modem_http_set_last_error("invalid_args");
+        return 0U;
+    }
+
+    if ((strlen(url) + 24U) >= sizeof(s_http_ota_cmd)) {
+        HTTP_OTA_LOG("[OTA][HTTP] signed URL too long for AT command\r\n");
+        modem_http_set_last_error("artifact_url_too_long");
+        return 0U;
+    }
+
+    if (g_at_mutex) {
+        osMutexAcquire(g_at_mutex, osWaitForever);
+    }
+
+    at_rx_active = 1;
+    u2_flush_all();
+    modem_http_set_last_error("none");
+
+    HTTP_OTA_LOG("[OTA][HTTP] download start base=0x%06lX max=%lu expected=%lu\r\n",
+                 (unsigned long)base_addr,
+                 (unsigned long)max_size,
+                 (unsigned long)expected_size);
+
+    if (expected_size != 0U) {
+        content_len = expected_size;
+    } else {
+        if (!modem_http_start_request_locked(url,
+                                             0U,
+                                             0U,
+                                             0U,
+                                             &http_status,
+                                             &content_len)) {
+            modem_http_set_last_error("http_start_failed");
+            goto done;
+        }
+
+        if (http_status != 200 && http_status != 206) {
+            HTTP_OTA_LOG("[OTA][HTTP] rejected HTTP status=%d\r\n", http_status);
+            modem_http_set_last_error("http_status_rejected");
+            goto done;
+        }
+    }
+
+    if (content_len == 0U || content_len > max_size) {
+        HTTP_OTA_LOG("[OTA][HTTP] invalid size len=%lu max=%lu\r\n",
+                     (unsigned long)content_len,
+                     (unsigned long)max_size);
+        modem_http_set_last_error("invalid_size");
+        goto done;
+    }
+
+    if (expected_size != 0U && content_len != expected_size) {
+        HTTP_OTA_LOG("[OTA][HTTP] size mismatch expected=%lu actual=%lu\r\n",
+                     (unsigned long)expected_size,
+                     (unsigned long)content_len);
+        modem_http_set_last_error("size_mismatch");
+        goto done;
+    }
+
+    uint32_t erase_len = ((content_len + W25Q_SECTOR_SIZE - 1U) /
+                          W25Q_SECTOR_SIZE) * W25Q_SECTOR_SIZE;
+    HTTP_OTA_LOG("[OTA][FLASH] erase base=0x%06lX len=%lu\r\n",
+                 (unsigned long)base_addr,
+                 (unsigned long)erase_len);
+
+    for (uint32_t off = 0U; off < erase_len; off += W25Q_SECTOR_SIZE) {
+        modem_http_kick_watchdog();
+        if (!w25q_erase_sector_4k(flash, base_addr + off)) {
+            HTTP_OTA_LOG("[OTA][FLASH] erase failed addr=0x%06lX\r\n",
+                         (unsigned long)(base_addr + off));
+            modem_http_set_last_error("flash_erase_failed");
+            goto done;
+        }
+    }
+
+    sha256_init(&sha);
+    uint8_t use_range_windows = HTTP_OTA_USE_RANGE_WINDOWS ? 1U : 0U;
+    uint32_t window_remaining = 0U;
+    uint32_t window_read = 0U;
+    uint32_t active_window_start = 0xFFFFFFFFUL;
+    uint8_t active_window_retries = 0U;
+
+    if (!use_range_windows) {
+        uint32_t action_len = 0U;
+        http_status = 0;
+
+        if (!modem_http_start_request_locked(url,
+                                             0U,
+                                             0U,
+                                             0U,
+                                             &http_status,
+                                             &action_len)) {
+            modem_http_set_last_error("http_start_failed");
+            goto done;
+        }
+
+        if (http_status != 200 && http_status != 206) {
+            HTTP_OTA_LOG("[OTA][HTTP] rejected HTTP status=%d\r\n", http_status);
+            modem_http_set_last_error_status("http_status", http_status);
+            goto done;
+        }
+
+        if (action_len != content_len) {
+            HTTP_OTA_LOG("[OTA][HTTP] action size mismatch expected=%lu actual=%lu\r\n",
+                         (unsigned long)content_len,
+                         (unsigned long)action_len);
+            modem_http_set_last_error("http_size_mismatch");
+            goto done;
+        }
+    }
+
+    while (written < content_len) {
+        modem_http_kick_watchdog();
+
+        if (use_range_windows && window_remaining == 0U) {
+            uint32_t window_len = content_len - written;
+            uint32_t action_len = 0U;
+            if (window_len > HTTP_OTA_RANGE_WINDOW) {
+                window_len = HTTP_OTA_RANGE_WINDOW;
+            }
+
+            if (active_window_start != written) {
+                active_window_start = written;
+                active_window_retries = 0U;
+            }
+
+            HTTP_OTA_LOG("[OTA][HTTP] range start=%lu len=%lu\r\n",
+                         (unsigned long)written,
+                         (unsigned long)window_len);
+
+            http_status = 0;
+            uint8_t range_open_ok = modem_http_start_request_locked(url,
+                                                                    1U,
+                                                                    written,
+                                                                    window_len,
+                                                                    &http_status,
+                                                                    &action_len);
+            uint8_t range_status_ok =
+                (http_status == 206) ||
+                (http_status == 200 &&
+                 written == 0U &&
+                 action_len == content_len &&
+                 window_len == content_len);
+
+            if (!range_open_ok || !range_status_ok) {
+                if (!range_open_ok) {
+                    HTTP_OTA_LOG("[OTA][HTTP] range open failed start=%lu\r\n",
+                                 (unsigned long)written);
+                    modem_http_set_last_error("range_open_failed");
+                } else {
+                    HTTP_OTA_LOG("[OTA][HTTP] rejected range status=%d\r\n",
+                                 http_status);
+                    modem_http_set_last_error_status("range_status", http_status);
+                }
+
+                uint8_t max_retries = range_open_ok ?
+                                      HTTP_OTA_RANGE_STATUS_RETRIES :
+                                      HTTP_OTA_RANGE_OPEN_RETRIES;
+
+                if (active_window_retries < max_retries) {
+                    active_window_retries++;
+                    HTTP_OTA_LOG("[OTA][HTTP] reopen range start=%lu retry=%u/%u\r\n",
+                                 (unsigned long)active_window_start,
+                                 active_window_retries,
+                                 (unsigned int)max_retries);
+                    modem_http_abort_response_locked();
+                    osDelay(range_open_ok ?
+                            (1500U * active_window_retries) :
+                            (1000U * active_window_retries));
+                    continue;
+                }
+
+                goto done;
+            }
+
+            window_remaining = window_len;
+            window_read = 0U;
+        }
+
+        uint32_t want = use_range_windows ? window_remaining : (content_len - written);
+        if (want > sizeof(s_http_ota_chunk)) {
+            want = sizeof(s_http_ota_chunk);
+        }
+
+        uint32_t read_offset = use_range_windows ? window_read : written;
+        int got = -1;
+        for (uint32_t attempt = 1U;
+             attempt <= HTTP_OTA_CHUNK_RETRIES;
+             attempt++) {
+            got = modem_http_read_chunk_locked(read_offset,
+                                               want,
+                                               s_http_ota_chunk,
+                                               sizeof(s_http_ota_chunk),
+                                               HTTP_OTA_READ_MS);
+            if (got > 0 && got <= (int)want) {
+                break;
+            }
+
+            HTTP_OTA_LOG("[OTA][HTTP] chunk retry offset=%lu attempt=%lu/%lu got=%d want=%lu\r\n",
+                         (unsigned long)written,
+                         (unsigned long)attempt,
+                         (unsigned long)HTTP_OTA_CHUNK_RETRIES,
+                         got,
+                         (unsigned long)want);
+            u2_flush_all();
+            osDelay(250U * attempt);
+        }
+
+        if (got <= 0 || got > (int)want) {
+            if (use_range_windows && active_window_retries < HTTP_OTA_RANGE_READ_RETRIES) {
+                active_window_retries++;
+                HTTP_OTA_LOG("[OTA][HTTP] restart range start=%lu retry=%u/%u\r\n",
+                             (unsigned long)active_window_start,
+                             active_window_retries,
+                             (unsigned int)HTTP_OTA_RANGE_READ_RETRIES);
+                modem_http_set_last_error("chunk_read_retry");
+                modem_http_abort_response_locked();
+                window_remaining = 0U;
+                window_read = 0U;
+                osDelay(500U * active_window_retries);
+                continue;
+            }
+
+            HTTP_OTA_LOG("[OTA][HTTP] read failed offset=%lu\r\n",
+                         (unsigned long)written);
+            modem_http_set_last_error("chunk_read_failed");
+            goto done;
+        }
+
+        if (got < (int)want) {
+            HTTP_OTA_LOG("[OTA][HTTP] short chunk accepted offset=%lu got=%d want=%lu\r\n",
+                         (unsigned long)written,
+                         got,
+                         (unsigned long)want);
+        }
+
+        if (!w25q_write(flash,
+                        base_addr + written,
+                        s_http_ota_chunk,
+                        (uint32_t)got)) {
+            HTTP_OTA_LOG("[OTA][FLASH] write failed offset=%lu len=%d\r\n",
+                         (unsigned long)written,
+                         got);
+            modem_http_set_last_error("flash_write_failed");
+            goto done;
+        }
+
+        sha256_update(&sha, s_http_ota_chunk, (size_t)got);
+        written += (uint32_t)got;
+        if (use_range_windows) {
+            window_read += (uint32_t)got;
+            window_remaining -= (uint32_t)got;
+            if (window_remaining == 0U) {
+                (void)modem_http_send_wait_ok_locked("AT+HTTPTERM", NULL, 5000U);
+                modem_http_drain_until_quiet_locked(250U, 80U);
+                active_window_start = 0xFFFFFFFFUL;
+                active_window_retries = 0U;
+            }
+        }
+
+        if (progress_cb) {
+            progress_cb(written, content_len, progress_ctx);
+        }
+    }
+
+    sha256_final_hex(&sha, calc_sha256);
+    if (out_sha256) {
+        strncpy(out_sha256, calc_sha256, 65U);
+        out_sha256[64] = '\0';
+    }
+
+    HTTP_OTA_LOG("[OTA][VERIFY] size=%lu sha256=%s\r\n",
+                 (unsigned long)written,
+                 calc_sha256);
+
+    if (!modem_http_sha_matches(expected_sha256, calc_sha256)) {
+        HTTP_OTA_LOG("[OTA][VERIFY] sha mismatch expected=%s actual=%s\r\n",
+                     expected_sha256 ? expected_sha256 : "",
+                     calc_sha256);
+        modem_http_set_last_error("sha_mismatch");
+        goto done;
+    }
+
+    if (out_size) {
+        *out_size = written;
+    }
+
+    ok = 1U;
+    modem_http_set_last_error("none");
+
+done:
+    (void)modem_http_send_wait_ok_locked("AT+HTTPTERM", NULL, 8000U);
+    at_rx_active = 0;
+    if (g_at_mutex) {
+        osMutexRelease(g_at_mutex);
+    }
+
+    HTTP_OTA_LOG("[OTA][HTTP] download %s written=%lu\r\n",
+                 ok ? "OK" : "FAIL",
+                 (unsigned long)written);
+
+    return ok;
 }
 
 /* ================= AT COMMAND ENGINE (UPDATED) ================= */

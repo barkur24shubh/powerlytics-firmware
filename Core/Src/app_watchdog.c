@@ -84,12 +84,17 @@ static uint8_t app_watchdog_tasks_healthy(void)
             return 0U;
         }
 
-        if ((now - s_task_last_seen[task]) > timeout_ms) {
+        uint32_t last_seen = s_task_last_seen[task];
+        if (last_seen > now) {
+            continue;
+        }
+
+        if ((now - last_seen) > timeout_ms) {
             if ((now - s_last_blocked_diag_tick) >= APP_WATCHDOG_DIAG_INTERVAL_MS) {
                 s_last_blocked_diag_tick = now;
                 print("[IWDG] refresh blocked: task=%s stale age=%lu timeout=%lu\r\n",
                       app_watchdog_task_name((app_watchdog_task_t)task),
-                      (unsigned long)(now - s_task_last_seen[task]),
+                      (unsigned long)(now - last_seen),
                       (unsigned long)timeout_ms);
             }
             return 0U;
