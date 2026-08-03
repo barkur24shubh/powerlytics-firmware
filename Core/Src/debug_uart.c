@@ -10,7 +10,7 @@ static uint32_t dbg_force_enabled_until = 0U;
 #if defined(DEBUG)
 static uint8_t dbg_uart_enabled = 1U;
 #else
-static uint8_t dbg_uart_enabled = 0U;
+static uint8_t dbg_uart_enabled = 1U;
 #endif
 
 void debug_uart_init(UART_HandleTypeDef *huart) {
@@ -35,6 +35,7 @@ uint8_t debug_uart_is_enabled(void) {
 
 void print(const char *fmt, ...) {
     if (!dbg_huart && !dbg_sink) return;
+    if (!fmt) return;
 
     char buf[1024];
     va_list args;

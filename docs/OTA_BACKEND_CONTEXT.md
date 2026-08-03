@@ -59,8 +59,7 @@ The backend should store a manifest with every release.
   "schemaVersion": 1,
   "firmwareVersion": "1.0.1",
   "firmwareBuild": "2026-08-02-001",
-  "deviceModel": "blackpill-f407-gateway",
-  "pcbRevision": "revA",
+  "deviceModel": "leam 1.3",
   "size": 164108,
   "sha256": "hex_sha256_of_bin",
   "signature": "future_signature",
@@ -84,17 +83,22 @@ Payload:
 {
   "type": "ota",
   "deploymentId": "ota_2026_08_02_001",
-  "firmwareVersion": "1.0.1",
-  "firmwareBuild": "2026-08-02-001",
-  "deviceModel": "blackpill-f407-gateway",
-  "pcbRevision": "revA",
-  "artifactUrl": "https://backend.example.com/ota/signed-url",
+  "firmwareVersion": "1.0.5",
+  "deviceModel": "leam 1.3",
+  "artifactUrl": "http://storage.googleapis.com/powerlytics-ota-firmware/firmware/{deviceModelId}/1.0.5/firmware.bin",
   "size": 164108,
-  "sha256": "hex_sha256_of_bin",
-  "signature": "future_signature",
-  "force": false,
-  "allowDowngrade": false
+  "sha256": "hex_sha256_of_bin"
 }
+```
+
+Accepted aliases for backend compatibility:
+
+```text
+type: ota or firmware_update
+firmwareVersion: firmwareVersion, targetVersion, or version
+artifactUrl: artifactUrl or downloadUrl
+sha256: sha256 or checksumSha256
+size: size or sizeBytes
 ```
 
 ## OTA Device Acknowledgements
@@ -116,33 +120,27 @@ Payload:
   "progress": 0,
   "currentVersion": "1.0.0",
   "targetVersion": "1.0.1",
-  "deviceModel": "blackpill-f407-gateway",
-  "pcbRevision": "revA",
+  "deviceModel": "leam 1.3",
   "reason": "accepted"
 }
 ```
 
-Expected statuses:
+Current firmware statuses:
 
 ```text
 OTA_RECEIVED
 OTA_REJECTED
 OTA_DOWNLOAD_STARTED
-OTA_DOWNLOAD_PROGRESS
 OTA_DOWNLOAD_COMPLETE
 OTA_VERIFY_OK
-OTA_VERIFY_FAILED
-OTA_READY_TO_INSTALL
-OTA_INSTALL_SCHEDULED
-OTA_BOOTED_NEW_VERSION
-OTA_CONFIRMED
+OTA_INSTALLING
+OTA_INSTALLED
 OTA_DOWNLOAD_FAILED
 OTA_INSTALL_FAILED
-OTA_ROLLBACK
-OTA_TIMEOUT
 ```
 
-Backend should mark deployment successful only after `OTA_CONFIRMED`.
+Backend should currently mark the firmware as installed after `OTA_INSTALLED`.
+`OTA_CONFIRMED`, rollback, and dual-slot states are future fail-safe work.
 
 ## Backend Deployment State
 
@@ -154,8 +152,7 @@ Deployment object:
   "createdBy": "admin_user_id",
   "targetDeviceIds": ["device_1"],
   "targetImeis": ["863110085124686"],
-  "deviceModel": "blackpill-f407-gateway",
-  "pcbRevision": "revA",
+  "deviceModel": "leam 1.3",
   "firmwareVersion": "1.0.1",
   "status": "IN_PROGRESS",
   "rolloutMode": "single_device"
@@ -224,7 +221,7 @@ GCP_SERVICE_ACCOUNT_EMAIL
 The workflow uploads the current committed firmware artifacts to:
 
 ```text
-gs://{GCS_BUCKET_NAME}/firmware/{deviceModel}/{pcbRevision}/{firmwareVersion}/{gitSha}/
+gs://{GCS_BUCKET_NAME}/firmware/{deviceModel}/{firmwareVersion}/{gitSha}/
 ```
 
 Uploaded files:

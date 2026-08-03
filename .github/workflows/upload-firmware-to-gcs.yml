@@ -14,7 +14,7 @@ on:
       device_model:
         description: Target device model
         required: true
-        default: "blackpill-f407-gateway"
+        default: "leam 1.3"
       artifact_dir:
         description: Directory containing firmware artifacts
         required: true

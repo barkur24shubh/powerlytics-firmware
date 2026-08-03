@@ -46,6 +46,13 @@ STM32_Programmer_CLI -c port=SWD -w artifacts/bootloader/powerlytics_bootloader.
 STM32_Programmer_CLI -c port=SWD -w artifacts/app/BALCKPILL_BASED_GENERIC_GATEWAY.elf -v -rst
 ```
 
+For local development, use the helper so the bootloader and relocated app are
+always built and flashed together:
+
+```sh
+./scripts/flash_ota_pair.sh
+```
+
 OTA firmware binaries must be generated from this project after the linker
 change, because the app is linked to run from `0x08008000`.
 

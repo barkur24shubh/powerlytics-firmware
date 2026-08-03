@@ -27,6 +27,7 @@
 /* Board / platform */
 #include "app_board_io.h"
 #include "app_debug_led.h"
+#include "app_firmware.h"
 #include "app_gateway_platform.h"
 #include "app_gateway_runtime.h"
 #include "app_sd_card.h"
@@ -136,6 +137,15 @@ void StartTask02(void *argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void app_print_firmware_identity(const char *tag)
+{
+  print("[FW][%s] version=%s build=%s model=%s\r\n",
+        tag ? tag : "BOOT",
+        APP_FIRMWARE_VERSION,
+        APP_FIRMWARE_BUILD,
+        APP_DEVICE_MODEL);
+}
+
 static void app_print_loaded_config(const modbus_cfg_t *cfg)
 {
     if (!cfg) return;
@@ -316,6 +326,7 @@ int main(void)
 
   app_gateway_print_reset_reason();
   print("\r\n=== Device boot ===\r\n");
+  app_print_firmware_identity("BOOT");
 
   app_debug_led_init();
 
