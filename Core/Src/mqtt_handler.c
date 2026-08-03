@@ -531,6 +531,22 @@ static uint8_t handle_ota_cjson(cJSON *root)
     const char *sha256 = json_str_or_empty(root, "sha256");
     int size = json_int_or(root, "size", 0);
 
+    if (target_version[0] == '\0') {
+        target_version = json_str_or_empty(root, "targetVersion");
+    }
+    if (target_version[0] == '\0') {
+        target_version = json_str_or_empty(root, "version");
+    }
+    if (artifact_url[0] == '\0') {
+        artifact_url = json_str_or_empty(root, "downloadUrl");
+    }
+    if (sha256[0] == '\0') {
+        sha256 = json_str_or_empty(root, "checksumSha256");
+    }
+    if (size <= 0) {
+        size = json_int_or(root, "sizeBytes", 0);
+    }
+
     if (deployment_id[0] == '\0') {
         (void)publish_ota_status_reported("unknown",
                                           "OTA_REJECTED",
@@ -1415,7 +1431,8 @@ void handle_downlink_cjson(const char *payload_str)
         return;
     }
 
-    if (json_type_equals(type_str, "ota"))
+    if (json_type_equals(type_str, "ota") ||
+        json_type_equals(type_str, "firmware_update"))
     {
         handle_ota_cjson(root);
         cJSON_Delete(root);
