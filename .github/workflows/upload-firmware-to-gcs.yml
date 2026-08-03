@@ -15,10 +15,6 @@ on:
         description: Target device model
         required: true
         default: "blackpill-f407-gateway"
-      pcb_revision:
-        description: Target PCB revision
-        required: true
-        default: "revA"
       artifact_dir:
         description: Directory containing firmware artifacts
         required: true
@@ -50,7 +46,6 @@ jobs:
       FIRMWARE_VERSION: ${{ inputs.firmware_version }}
       FIRMWARE_BUILD: ${{ inputs.firmware_build }}
       DEVICE_MODEL: ${{ inputs.device_model }}
-      PCB_REVISION: ${{ inputs.pcb_revision }}
       ARTIFACT_DIR: ${{ inputs.artifact_dir }}
       GCS_PREFIX: ${{ inputs.gcs_prefix }}
 
@@ -131,7 +126,7 @@ jobs:
           bin_size="$(stat -c%s "${upload_dir}/BALCKPILL_BASED_GENERIC_GATEWAY.bin")"
           bin_sha256="$(sha256sum "${upload_dir}/BALCKPILL_BASED_GENERIC_GATEWAY.bin" | awk '{print $1}')"
           bucket="${GCS_BUCKET_NAME#gs://}"
-          object_prefix="${GCS_PREFIX}/${DEVICE_MODEL}/${PCB_REVISION}/${FIRMWARE_VERSION}/${GITHUB_SHA}"
+          object_prefix="${GCS_PREFIX}/${DEVICE_MODEL}/${FIRMWARE_VERSION}/${GITHUB_SHA}"
 
           cat > "${upload_dir}/manifest.json" <<EOF
           {
@@ -140,7 +135,6 @@ jobs:
             "firmwareVersion": "${FIRMWARE_VERSION}",
             "firmwareBuild": "${FIRMWARE_BUILD}",
             "deviceModel": "${DEVICE_MODEL}",
-            "pcbRevision": "${PCB_REVISION}",
             "gitSha": "${GITHUB_SHA}",
             "githubRunId": "${GITHUB_RUN_ID}",
             "bucket": "${bucket}",

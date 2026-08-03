@@ -440,7 +440,6 @@ static uint8_t publish_ota_status(const char *deployment_id,
              "\"currentVersion\":\"%s\","
              "\"targetVersion\":\"%s\","
              "\"deviceModel\":\"%s\","
-             "\"pcbRevision\":\"%s\","
              "\"reason\":\"%s\""
              "}",
              safe_deployment,
@@ -450,7 +449,6 @@ static uint8_t publish_ota_status(const char *deployment_id,
              APP_FIRMWARE_VERSION,
              safe_target,
              APP_DEVICE_MODEL,
-             APP_PCB_REVISION,
              safe_reason);
 
     OTA_LOG("[OTA] ACK publish: %s\r\n", message);
@@ -526,7 +524,6 @@ static uint8_t handle_ota_cjson(cJSON *root)
     const char *deployment_id = json_str_or_empty(root, "deploymentId");
     const char *target_version = json_str_or_empty(root, "firmwareVersion");
     const char *device_model = json_str_or_empty(root, "deviceModel");
-    const char *pcb_revision = json_str_or_empty(root, "pcbRevision");
     const char *artifact_url = json_str_or_empty(root, "artifactUrl");
     const char *sha256 = json_str_or_empty(root, "sha256");
     int size = json_int_or(root, "size", 0);
@@ -578,7 +575,6 @@ static uint8_t handle_ota_cjson(cJSON *root)
 
     if (target_version[0] == '\0' ||
         device_model[0] == '\0' ||
-        pcb_revision[0] == '\0' ||
         artifact_url[0] == '\0' ||
         sha256[0] == '\0' ||
         size <= 0) {
@@ -598,16 +594,6 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                           0,
                                           target_version,
                                           "device_model_mismatch");
-        return 1U;
-    }
-
-    if (strcmp(pcb_revision, APP_PCB_REVISION) != 0) {
-        (void)publish_ota_status_reported(deployment_id,
-                                          "OTA_REJECTED",
-                                          "VALIDATE",
-                                          0,
-                                          target_version,
-                                          "pcb_revision_mismatch");
         return 1U;
     }
 
