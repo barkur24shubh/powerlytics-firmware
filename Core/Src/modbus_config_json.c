@@ -171,22 +171,75 @@
 
 #include "modbus_config_json.h"
 #include "cJSON.h"
+#include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+
+#define MODBUS_DEFAULT_SLAVE_BAUD        9600UL
+#define MODBUS_DEFAULT_SLAVE_DATA_BITS   8U
+#define MODBUS_DEFAULT_SLAVE_STOP_BITS   1U
+#define MODBUS_DEFAULT_SLAVE_PARITY      0U
+#define MODBUS_DEFAULT_SLAVE_INTERVAL_MS 1000UL
+#define MODBUS_DEFAULT_SLAVE_TIMEOUT_MS  2000UL
+#define MODBUS_DEFAULT_SLAVE_RETRIES     3U
+
+static cJSON *json_get_any(cJSON *obj, const char *a, const char *b, const char *c)
+{
+  cJSON *item = NULL;
+
+  if (!cJSON_IsObject(obj)) return NULL;
+
+  if (a) {
+    item = cJSON_GetObjectItemCaseSensitive(obj, a);
+    if (item) return item;
+  }
+
+  if (b) {
+    item = cJSON_GetObjectItemCaseSensitive(obj, b);
+    if (item) return item;
+  }
+
+  if (c) {
+    item = cJSON_GetObjectItemCaseSensitive(obj, c);
+    if (item) return item;
+  }
+
+  return NULL;
+}
 
 static uint8_t parity_from_str(const char *s)
 {
   if (!s) return 0;
-  if (strcmp(s, "even") == 0) return 1;
-  if (strcmp(s, "odd")  == 0) return 2;
+  if (strcmp(s, "even") == 0 || strcmp(s, "EVEN") == 0) return 1;
+  if (strcmp(s, "odd")  == 0 || strcmp(s, "ODD") == 0) return 2;
   return 0; // "none" or unknown
 }
 
 static uint8_t func_from_str(const char *s)
 {
   if (!s) return 0;
-  if (strcmp(s, "fc_3") == 0) return 3;
-  if (strcmp(s, "fc_4") == 0) return 4;
+  if (strcmp(s, "fc_3") == 0 || strcmp(s, "fc3") == 0 ||
+      strcmp(s, "3") == 0 || strcmp(s, "holding") == 0 ||
+      strcmp(s, "holding_registers") == 0) return 3;
+  if (strcmp(s, "fc_4") == 0 || strcmp(s, "fc4") == 0 ||
+      strcmp(s, "4") == 0 || strcmp(s, "input") == 0 ||
+      strcmp(s, "input_registers") == 0) return 4;
+  return 0;
+}
+
+static uint8_t func_from_json(cJSON *item)
+{
+  if (cJSON_IsString(item) && item->valuestring) {
+    return func_from_str(item->valuestring);
+  }
+
+  if (cJSON_IsNumber(item)) {
+    int fn = (int)item->valuedouble;
+    if (fn == 3 || fn == 4) {
+      return (uint8_t)fn;
+    }
+  }
+
   return 0;
 }
 
@@ -197,6 +250,15 @@ static uint8_t qty_from_bits(int bits)
   if ((bits % 16) != 0) return 0;
   int q = bits / 16;
   if (q == 1 || q == 2 || q == 4) return (uint8_t)q;
+  return 0;
+}
+
+static uint8_t qty_from_register_count(int qty)
+{
+  if (qty == 1 || qty == 2 || qty == 4) {
+    return (uint8_t)qty;
+  }
+
   return 0;
 }
 
@@ -403,13 +465,20 @@ bool modbus_cfg_from_json(const char *json, modbus_cfg_t *cfg)
 
     mb_slave_cfg_t *sc = &cfg->slaves[sidx];
     memset(sc, 0, sizeof(*sc));
+    sc->baud = MODBUS_DEFAULT_SLAVE_BAUD;
+    sc->data_bits = MODBUS_DEFAULT_SLAVE_DATA_BITS;
+    sc->stop_bits = MODBUS_DEFAULT_SLAVE_STOP_BITS;
+    sc->parity = MODBUS_DEFAULT_SLAVE_PARITY;
+    sc->interval_ms = MODBUS_DEFAULT_SLAVE_INTERVAL_MS;
+    sc->timeout_ms = MODBUS_DEFAULT_SLAVE_TIMEOUT_MS;
+    sc->retries = MODBUS_DEFAULT_SLAVE_RETRIES;
 
     // unique_slave_id (UUID string)
     copy_json_str(sc->unique_slave_id, sizeof(sc->unique_slave_id),
-                  cJSON_GetObjectItemCaseSensitive(s, "unique_slave_id"));
+                  json_get_any(s, "unique_slave_id", "uniqueSlaveId", "uniqueSlaveID"));
 
     // numeric slave_id
-    cJSON *sid = cJSON_GetObjectItemCaseSensitive(s, "slave_id");
+    cJSON *sid = json_get_any(s, "slave_id", "slaveId", "address");
     if (cJSON_IsNumber(sid) && sid->valuedouble >= 0) {
       sc->slave_id = (uint8_t)sid->valuedouble;
     }
@@ -417,7 +486,7 @@ bool modbus_cfg_from_json(const char *json, modbus_cfg_t *cfg)
     // serial
     cJSON *serial = cJSON_GetObjectItemCaseSensitive(s, "serial");
     if (cJSON_IsObject(serial)) {
-      cJSON *baud = cJSON_GetObjectItemCaseSensitive(serial, "baudRate");
+      cJSON *baud = json_get_any(serial, "baudRate", "baud", "baud_rate");
       cJSON *db   = cJSON_GetObjectItemCaseSensitive(serial, "dataBits");
       cJSON *sb   = cJSON_GetObjectItemCaseSensitive(serial, "stopBits");
       cJSON *par  = cJSON_GetObjectItemCaseSensitive(serial, "parity");
@@ -442,15 +511,15 @@ bool modbus_cfg_from_json(const char *json, modbus_cfg_t *cfg)
     // polling
     cJSON *polling = cJSON_GetObjectItemCaseSensitive(s, "polling");
     if (cJSON_IsObject(polling)) {
-      cJSON *ival = cJSON_GetObjectItemCaseSensitive(polling, "intervalMs");
-      cJSON *tout = cJSON_GetObjectItemCaseSensitive(polling, "timeoutMs");
+      cJSON *ival = json_get_any(polling, "intervalMs", "interval", "pollIntervalMs");
+      cJSON *tout = json_get_any(polling, "timeoutMs", "timeout", "timeout_ms");
       cJSON *ret  = cJSON_GetObjectItemCaseSensitive(polling, "retries");
 
-      if (cJSON_IsNumber(ival) && ival->valuedouble >= 0) {
+      if (cJSON_IsNumber(ival) && ival->valuedouble > 0) {
         sc->interval_ms = (uint32_t)ival->valuedouble;
       }
 
-      if (cJSON_IsNumber(tout) && tout->valuedouble >= 0) {
+      if (cJSON_IsNumber(tout) && tout->valuedouble > 0) {
         sc->timeout_ms = (uint32_t)tout->valuedouble;
       }
 
@@ -477,21 +546,26 @@ bool modbus_cfg_from_json(const char *json, modbus_cfg_t *cfg)
       memset(rc, 0, sizeof(*rc));
 
       copy_json_str(rc->read_id, sizeof(rc->read_id),
-                    cJSON_GetObjectItemCaseSensitive(r, "readId"));
+                    json_get_any(r, "readId", "read_id", "id"));
 
-      cJSON *func = cJSON_GetObjectItemCaseSensitive(r, "func");
-      if (cJSON_IsString(func) && func->valuestring) {
-        rc->func = func_from_str(func->valuestring);
-      }
+      cJSON *func = json_get_any(r, "func", "function", "functionCode");
+      rc->func = func_from_json(func);
 
-      cJSON *start = cJSON_GetObjectItemCaseSensitive(r, "start");
+      cJSON *start = json_get_any(r, "start", "address", "startAddress");
       if (cJSON_IsNumber(start) && start->valuedouble >= 0) {
         rc->start_reg = (uint16_t)start->valuedouble;
       }
 
-      cJSON *bits = cJSON_GetObjectItemCaseSensitive(r, "bits");
+      cJSON *bits = json_get_any(r, "bits", "bitWidth", "registerBits");
       if (cJSON_IsNumber(bits)) {
         rc->qty = qty_from_bits((int)bits->valuedouble); // 1/2/4
+      }
+
+      if (rc->qty == 0) {
+        cJSON *qty = json_get_any(r, "qty", "quantity", "registerCount");
+        if (cJSON_IsNumber(qty)) {
+          rc->qty = qty_from_register_count((int)qty->valuedouble);
+        }
       }
 
       // minimal validation: must have readId, func (3/4), qty (1/2/4)
@@ -503,9 +577,12 @@ bool modbus_cfg_from_json(const char *json, modbus_cfg_t *cfg)
     }
 
     // Accept slave only if it has required ids + at least 1 read
-    if (sc->unique_slave_id[0] == '\0') continue;
     if (sc->slave_id == 0) continue; // keep strict for now
     if (ridx == 0) continue;
+
+    if (sc->unique_slave_id[0] == '\0') {
+      snprintf(sc->unique_slave_id, sizeof(sc->unique_slave_id), "%u", sc->slave_id);
+    }
 
     sc->read_count = ridx;
     sidx++;

@@ -284,6 +284,8 @@ static HAL_StatusTypeDef mb_read_with_retries(const mb_slave_cfg_t *sc,
                                               uint16_t *out_regs)
 {
   uint8_t attempts = (uint8_t)(sc->retries + 1U);
+  uint32_t timeout_ms = (sc->timeout_ms > 0U) ? sc->timeout_ms : 2000U;
+
   if (attempts == 0U) attempts = 1U;
   if (attempts > 5U) attempts = 5U;
 
@@ -294,7 +296,7 @@ static HAL_StatusTypeDef mb_read_with_retries(const mb_slave_cfg_t *sc,
                               sc->slave_id,
                               rc->start_reg,
                               qty,
-                              sc->timeout_ms,
+                              timeout_ms,
                               out_regs);
 
     if (last_st == HAL_OK) {
@@ -307,6 +309,17 @@ static HAL_StatusTypeDef mb_read_with_retries(const mb_slave_cfg_t *sc,
   }
 
   return last_st;
+}
+
+static const char *hal_status_name(HAL_StatusTypeDef st)
+{
+  switch (st) {
+    case HAL_OK: return "OK";
+    case HAL_ERROR: return "ERROR";
+    case HAL_BUSY: return "BUSY";
+    case HAL_TIMEOUT: return "TIMEOUT";
+    default: return "UNKNOWN";
+  }
 }
 
 static HAL_StatusTypeDef mb_read_startup_filtered(uint8_t slave_index,
@@ -403,6 +416,17 @@ static void json_values_add_mi_1(char *json, int max, int *idx, uint8_t *first_k
                                       rc,
                                       qty,
                                       g_mb_regs);
+      }
+
+      if (st != HAL_OK) {
+        print("[MODBUS][READ_FAIL] sid=%u readId=%s fc=%u start=%u qty=%u timeout=%lu st=%s\r\n",
+              sc->slave_id,
+              rc->read_id,
+              rc->func,
+              rc->start_reg,
+              qty,
+              (unsigned long)((sc->timeout_ms > 0U) ? sc->timeout_ms : 2000U),
+              hal_status_name(st));
       }
 
       jb_append(json, max, idx, "{");
