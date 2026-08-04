@@ -6,6 +6,7 @@
 static UART_HandleTypeDef *dbg_huart = NULL;
 static debug_uart_sink_t dbg_sink = NULL;
 static uint32_t dbg_force_enabled_until = 0U;
+static uint8_t dbg_at_trace_enabled = 0U;
 
 #if defined(DEBUG)
 static uint8_t dbg_uart_enabled = 1U;
@@ -25,12 +26,20 @@ void debug_uart_set_enabled(uint8_t enabled) {
     dbg_uart_enabled = enabled ? 1U : 0U;
 }
 
+void debug_uart_set_at_enabled(uint8_t enabled) {
+    dbg_at_trace_enabled = enabled ? 1U : 0U;
+}
+
 void debug_uart_force_enabled_for(uint32_t duration_ms) {
     dbg_force_enabled_until = HAL_GetTick() + duration_ms;
 }
 
 uint8_t debug_uart_is_enabled(void) {
     return dbg_uart_enabled;
+}
+
+uint8_t debug_uart_at_is_enabled(void) {
+    return dbg_at_trace_enabled;
 }
 
 void print(const char *fmt, ...) {

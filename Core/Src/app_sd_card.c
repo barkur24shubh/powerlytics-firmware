@@ -301,10 +301,14 @@ static uint8_t app_sd_contains_ci(const char *text, const char *needle)
 
 static const char *app_sd_terminal_line_severity(const char *line)
 {
+    if (!line)
+    {
+        return NULL;
+    }
+
     if (app_sd_contains_ci(line, "[ERR]") ||
         app_sd_contains_ci(line, "ERROR") ||
-        app_sd_contains_ci(line, "FAIL") ||
-        app_sd_contains_ci(line, "TIMEOUT") ||
+        app_sd_contains_ci(line, "FATAL") ||
         app_sd_contains_ci(line, "HARDFAULT") ||
         app_sd_contains_ci(line, "ASSERT"))
     {
@@ -317,24 +321,275 @@ static const char *app_sd_terminal_line_severity(const char *line)
         return "WARN";
     }
 
+    if (app_sd_contains_ci(line, " failed") ||
+        app_sd_contains_ci(line, " failed,") ||
+        app_sd_contains_ci(line, " failed:") ||
+        app_sd_contains_ci(line, " timeout") ||
+        app_sd_contains_ci(line, "TIMEOUT after"))
+    {
+        return "ERROR";
+    }
+
     return NULL;
+}
+
+static uint8_t app_sd_line_starts_with(const char *line, const char *prefix)
+{
+    if (!line || !prefix)
+    {
+        return 0U;
+    }
+
+    return (strncmp(line, prefix, strlen(prefix)) == 0) ? 1U : 0U;
+}
+
+static uint8_t app_sd_terminal_line_is_noisy_transport(const char *line)
+{
+    if (!line)
+    {
+        return 1U;
+    }
+
+    /*
+     * These are low-level modem plumbing lines. They are useful on live UART,
+     * but they make the SD error log hard to read and can leak full payloads.
+     * Higher-level COMM/MQTT/FLOG lines describe the actual failure.
+     */
+    if (app_sd_line_starts_with(line, "[AT] timeout=") ||
+        app_sd_line_starts_with(line, "[AT] cmd") ||
+        app_sd_line_starts_with(line, "[AT] expect") ||
+        app_sd_line_starts_with(line, "[AT] task=") ||
+        app_sd_line_starts_with(line, "[AT] RX flushed") ||
+        app_sd_line_starts_with(line, "[AT] expected_seen") ||
+        app_sd_line_starts_with(line, "[AT] IGNORE") ||
+        app_sd_line_starts_with(line, "[AT->GSM]") ||
+        app_sd_line_starts_with(line, "[GSM->AT]") ||
+        app_sd_line_starts_with(line, "[ADC]") ||
+        app_sd_line_starts_with(line, "[TRY ") ||
+        app_sd_line_starts_with(line, "====") ||
+        app_sd_line_starts_with(line, "----") ||
+        app_sd_line_starts_with(line, "{") ||
+        app_sd_line_starts_with(line, "[FLOG_UPLOAD] json=") ||
+        app_sd_contains_ci(line, "COMMAND FAILED, retrying") ||
+        app_sd_contains_ci(line, "fail_count="))
+    {
+        return 1U;
+    }
+
+    if (app_sd_line_starts_with(line, "[FLOG_UPLOAD]") &&
+        !app_sd_contains_ci(line, "[ERR]") &&
+        !app_sd_contains_ci(line, "upload failed") &&
+        !app_sd_contains_ci(line, "mark_uploaded failed"))
+    {
+        return 1U;
+    }
+
+    if (app_sd_line_starts_with(line, "[FLOG]") &&
+        !app_sd_contains_ci(line, "[ERR]") &&
+        !app_sd_contains_ci(line, "[WARN]"))
+    {
+        return 1U;
+    }
+
+    if (app_sd_line_starts_with(line, "[CRITICAL][DEFER]") ||
+        app_sd_line_starts_with(line, "[CRITICAL][MERGE]") ||
+        app_sd_line_starts_with(line, "[CRITICAL][FLASH]"))
+    {
+        return 1U;
+    }
+
+    return 0U;
+}
+
+static const char *app_sd_terminal_explain_line(const char *line)
+{
+    if (!line)
+    {
+        return "";
+    }
+
+    if (app_sd_contains_ci(line, "[MODBUS][READ_FAIL]"))
+    {
+        return "Modbus read failed. Check slave id, baud rate, register address, wiring, and sensor power.";
+    }
+
+    if (app_sd_contains_ci(line, "[MODBUS][ERR] UART config failed"))
+    {
+        return "Modbus serial port configuration failed. Check baud rate, parity, stop bits, and firmware config.";
+    }
+
+    if (app_sd_contains_ci(line, "[SD][ERR]") ||
+        app_sd_contains_ci(line, "[SD_LOG][ERR]"))
+    {
+        return "SD card operation failed. Local SD backup logging may be disabled until the card mounts again.";
+    }
+
+    if (app_sd_contains_ci(line, "[FLOG_UPLOAD][ERR]") ||
+        app_sd_contains_ci(line, "mark_uploaded failed"))
+    {
+        return "Cloud log upload reached MQTT but could not mark the local flash record as uploaded.";
+    }
+
+    if (app_sd_contains_ci(line, "upload failed/uncertain"))
+    {
+        return "Cloud log upload was not confirmed. The log remains pending and will be retried later.";
+    }
+
+    if (app_sd_contains_ci(line, "[FLOG][ERR]"))
+    {
+        return "External flash log storage failed. Some offline error logs may not be preserved.";
+    }
+
+    if (app_sd_contains_ci(line, "[FLOG][WARN]"))
+    {
+        return "External flash log storage warning. Log storage may be full or being cleaned.";
+    }
+
+    if (app_sd_contains_ci(line, "MQTT publish failed"))
+    {
+        return "MQTT publish failed. Device will keep the data/log pending and run network recovery.";
+    }
+
+    if (app_sd_contains_ci(line, "MQTT PUB failed"))
+    {
+        return "MQTT publish command failed inside the modem. Device will retry or reconnect MQTT.";
+    }
+
+    if (app_sd_contains_ci(line, "MQTT connect failed"))
+    {
+        return "MQTT connection failed. Device will retry MQTT, then rebuild GPRS/network if needed.";
+    }
+
+    if (app_sd_contains_ci(line, "MQTT Connection Failed") ||
+        app_sd_contains_ci(line, "MQTT CONNECT command did not return OK"))
+    {
+        return "MQTT broker connection was not confirmed by the modem. Device will run communication recovery.";
+    }
+
+    if (app_sd_contains_ci(line, "Subscribe FAIL"))
+    {
+        return "MQTT subscribe failed. Device may be online but unable to receive downlink commands.";
+    }
+
+    if (app_sd_contains_ci(line, "MQTT disconnect URC") ||
+        app_sd_contains_ci(line, "PDP deactivated") ||
+        app_sd_contains_ci(line, "PDN deactivated"))
+    {
+        return "Modem reported MQTT/mobile data disconnection. Device will reconnect automatically.";
+    }
+
+    if (app_sd_contains_ci(line, "GPRS failed") ||
+        app_sd_contains_ci(line, "GPRS/PDP failed"))
+    {
+        return "Mobile data session failed. Device will retry network attach and may reset the modem if it continues.";
+    }
+
+    if (app_sd_contains_ci(line, "network registration failed") ||
+        app_sd_contains_ci(line, "network attach failed"))
+    {
+        return "Cellular network registration failed. Check SIM coverage, antenna, and operator availability.";
+    }
+
+    if (app_sd_contains_ci(line, "SIM not ready"))
+    {
+        return "SIM is not ready. Check SIM insertion, SIM activation, and modem SIM interface.";
+    }
+
+    if (app_sd_contains_ci(line, "AT sync failed") ||
+        app_sd_contains_ci(line, "ATE0 failed"))
+    {
+        return "Modem did not respond to AT sync. Device will retry and then soft reset the modem.";
+    }
+
+    if (app_sd_contains_ci(line, "[MODEM] CSQ read failed") ||
+        app_sd_contains_ci(line, "failed to read signal quality"))
+    {
+        return "Signal quality check failed. Modem did not return a valid CSQ response.";
+    }
+
+    if (app_sd_contains_ci(line, "SOFT_RESET"))
+    {
+        return "Recovery action started: device is resetting the modem/controller to restore communication.";
+    }
+
+    if (app_sd_contains_ci(line, "[PAYLOAD][ERR]") ||
+        app_sd_contains_ci(line, "telemetry JSON exceeded"))
+    {
+        return "Telemetry payload became too large. Reduce configured Modbus reads or payload size.";
+    }
+
+    if (app_sd_contains_ci(line, "[CONFIG]") ||
+        app_sd_contains_ci(line, "config JSON parse failed") ||
+        app_sd_contains_ci(line, "modbus config parse failed") ||
+        app_sd_contains_ci(line, "config object missing") ||
+        app_sd_contains_ci(line, "configId missing"))
+    {
+        return "Configuration downlink failed validation. Check configId, apiKey, hash, and Modbus slave/register fields.";
+    }
+
+    if (app_sd_contains_ci(line, "[DOWNLINK][ERR]") ||
+        app_sd_contains_ci(line, "unsupported downlink type"))
+    {
+        return "Downlink command type is unsupported. Device ignored the command.";
+    }
+
+    if (app_sd_contains_ci(line, "[OTA]") ||
+        app_sd_contains_ci(line, "OTA_") ||
+        app_sd_contains_ci(line, "ota_"))
+    {
+        return "OTA update failed or was rejected. Check firmware URL, model, version, size, and SHA256.";
+    }
+
+    if (app_sd_contains_ci(line, "[MEM]") ||
+        app_sd_contains_ci(line, "LOW_STACK") ||
+        app_sd_contains_ci(line, "heap"))
+    {
+        return "Memory warning detected. Heap or task stack is getting low.";
+    }
+
+    if (app_sd_contains_ci(line, "HARDFAULT"))
+    {
+        return "Firmware fault occurred. Device captured crash details and reset for recovery.";
+    }
+
+    return "";
 }
 
 static void app_sd_terminal_queue_record(const char *severity, const char *line)
 {
     char ts[40];
-    char record[APP_SD_TERMINAL_LINE_SZ + 64U];
+    char record[APP_SD_TERMINAL_LINE_SZ + 160U];
     int n;
     size_t len;
     size_t space;
+    const char *explain;
 
     if (!severity || !line || line[0] == '\0')
     {
         return;
     }
 
+    if (app_sd_terminal_line_is_noisy_transport(line))
+    {
+        return;
+    }
+
     rtc_get_datetime_strings(ts, sizeof(ts));
-    n = snprintf(record, sizeof(record), "%s %s %s\r\n", ts, severity, line);
+    explain = app_sd_terminal_explain_line(line);
+
+    if (explain[0] != '\0')
+    {
+        n = snprintf(record,
+                     sizeof(record),
+                     "%s %s %s\r\n",
+                     ts,
+                     severity,
+                     explain);
+    }
+    else
+    {
+        n = snprintf(record, sizeof(record), "%s %s %s\r\n", ts, severity, line);
+    }
 
     if (n <= 0)
     {

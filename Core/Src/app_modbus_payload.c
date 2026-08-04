@@ -542,7 +542,9 @@ const char* app_build_payload_json_once(void)
 
   json[idx] = '\0';
 
-  print("%s\r\n", json);
+  print("[PAYLOAD] telemetry built len=%lu config=%s\r\n",
+        (unsigned long)strlen(json),
+        s_cfg.config_id);
   s_payload_overflow_reported = 0U;
   return json;
 }

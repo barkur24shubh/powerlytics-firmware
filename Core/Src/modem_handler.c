@@ -82,6 +82,47 @@ static void trim_crlf(char *s)
     }
 }
 
+static uint8_t modem_text_is_sensitive_or_payload(const char *text)
+{
+    const char *p = text;
+
+    if (!text) {
+        return 0U;
+    }
+
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+
+    if (*p == '{') {
+        return 1U;
+    }
+
+    if (strstr(text, "apiKey") ||
+        strstr(text, "\"values\"") ||
+        strstr(text, "\"type\":\"log\"") ||
+        strstr(text, "\"type\":\"config\"") ||
+        strstr(text, "\"type\":\"ota\""))
+    {
+        return 1U;
+    }
+
+    return 0U;
+}
+
+static void modem_print_text_or_summary(const char *prefix, const char *text)
+{
+    if (modem_text_is_sensitive_or_payload(text)) {
+        print("%s <payload hidden len=%lu>\r\n",
+              prefix ? prefix : "",
+              (unsigned long)strlen(text));
+    } else {
+        print("%s %s\r\n",
+              prefix ? prefix : "",
+              (text && text[0]) ? text : "(NULL/EMPTY)");
+    }
+}
+
 /* ================= OTA HTTP DOWNLOAD ================= */
 #define HTTP_OTA_CMD_MAX       2300U
 #define HTTP_OTA_CHUNK_SIZE    512U
@@ -119,6 +160,9 @@ static void trim_crlf(char *s)
 #define TCP_OTA_DOUBLE_READ_VERIFY 1U
 
 #define TCP_OTA_LOG(...) do { if (TCP_OTA_DEBUG_PRINT) { print(__VA_ARGS__); } } while (0)
+
+#define AT_TRACE_LOG(...) do { if (debug_uart_at_is_enabled()) { print(__VA_ARGS__); } } while (0)
+#define AT_TRACE_TEXT(prefix, text) do { if (debug_uart_at_is_enabled()) { modem_print_text_or_summary((prefix), (text)); } } while (0)
 
 static char s_http_ota_cmd[HTTP_OTA_CMD_MAX];
 static uint8_t s_http_ota_chunk[HTTP_OTA_CHUNK_SIZE];
@@ -1604,7 +1648,7 @@ uint8_t SIM800_SendATCommand2(const char *cmd,
 
     /* Guard: never run AT engine with NULL/EMPTY command */
     if (!cmd || cmd[0] == '\0') {
-        print("[AT] IGNORE: NULL/EMPTY cmd\r\n");
+        AT_TRACE_LOG("[AT] IGNORE: NULL/EMPTY cmd\r\n");
         return 0;
     }
 
@@ -1617,20 +1661,21 @@ uint8_t SIM800_SendATCommand2(const char *cmd,
 
     if (flush_rx) {
         u2_flush_all();
-        print("[AT] RX flushed\r\n");
+        AT_TRACE_LOG("[AT] RX flushed\r\n");
     }
 
-    print("[AT] task=%s\r\n", osThreadGetName(osThreadGetId()));
+    AT_TRACE_LOG("[AT] task=%s\r\n", osThreadGetName(osThreadGetId()));
 
-    print("\r\n================ AT START ================\r\n");
-    print("[AT] timeout=%lu ms\r\n", (unsigned long)timeout_ms);
-    print("[AT] cmd     = %s\r\n", (cmd && cmd[0]) ? cmd : "(NULL/EMPTY)");
-    print("[AT] expect  = %s\r\n", (expected) ? expected : "(none)");
-    print("==========================================\r\n");
+    AT_TRACE_LOG("\r\n================ AT START ================\r\n");
+    AT_TRACE_LOG("[AT] timeout=%lu ms\r\n", (unsigned long)timeout_ms);
+    AT_TRACE_TEXT("[AT] cmd     =", cmd);
+    AT_TRACE_LOG("[AT] expect  = %s\r\n", (expected) ? expected : "(none)");
+    AT_TRACE_LOG("==========================================\r\n");
 
     /* Send command */
     if (cmd && cmd[0] != '\0') {
-        print("\r\n[AT->GSM] %s\r\n", cmd);
+        AT_TRACE_LOG("\r\n");
+        AT_TRACE_TEXT("[AT->GSM]", cmd);
         u2_send_cmd(cmd);
     }
 
@@ -1655,7 +1700,14 @@ uint8_t SIM800_SendATCommand2(const char *cmd,
         /* RAW print */
         {
             uint32_t dt = HAL_GetTick() - t0;
-            print("[GSM->AT][%lums][RAW][n=%d] %s\r\n", (unsigned long)dt, n, line);
+            if (modem_text_is_sensitive_or_payload(line)) {
+                AT_TRACE_LOG("[GSM->AT][%lums][RAW][n=%d] <payload echo hidden len=%lu>\r\n",
+                             (unsigned long)dt,
+                             n,
+                             (unsigned long)strlen(line));
+            } else {
+                AT_TRACE_LOG("[GSM->AT][%lums][RAW][n=%d] %s\r\n", (unsigned long)dt, n, line);
+            }
         }
 
         trim_crlf(line);
@@ -1664,19 +1716,25 @@ uint8_t SIM800_SendATCommand2(const char *cmd,
         /* Trimmed print */
         {
             uint32_t dt = HAL_GetTick() - t0;
-            print("[GSM->AT][%lums] %s\r\n", (unsigned long)dt, line);
+            if (modem_text_is_sensitive_or_payload(line)) {
+                AT_TRACE_LOG("[GSM->AT][%lums] <payload echo hidden len=%lu>\r\n",
+                             (unsigned long)dt,
+                             (unsigned long)strlen(line));
+            } else {
+                AT_TRACE_LOG("[GSM->AT][%lums] %s\r\n", (unsigned long)dt, line);
+            }
         }
 
         /* Ignore echo */
         if (cmd && cmd[0] && !strcmp(line, cmd)) {
-            print("[AT] (ignored echo)\r\n");
+            AT_TRACE_LOG("[AT] (ignored echo)\r\n");
             continue;
         }
 
         /* ERROR terminators */
         if (strstr(line, "ERROR") || strstr(line, "+CME ERROR")) {
-            print("[AT] FAIL: %s\r\n", line);
-            print("================ AT END (FAIL) ================\r\n");
+            AT_TRACE_LOG("[AT] FAIL: %s\r\n", line);
+            AT_TRACE_LOG("================ AT END (FAIL) ================\r\n");
             at_rx_active = 0;
             if (g_at_mutex) osMutexRelease(g_at_mutex);
             return 0;
@@ -1684,8 +1742,8 @@ uint8_t SIM800_SendATCommand2(const char *cmd,
 
         /* Prompt terminator */
         if (strchr(line, '>')) {
-            print("[AT] PROMPT received: %s\r\n", line);
-            print("================ AT END (PROMPT) ==============\r\n");
+            AT_TRACE_LOG("[AT] PROMPT received: %s\r\n", line);
+            AT_TRACE_LOG("================ AT END (PROMPT) ==============\r\n");
             at_rx_active = 0;
             if (g_at_mutex) osMutexRelease(g_at_mutex);
             return 1;
@@ -1694,15 +1752,15 @@ uint8_t SIM800_SendATCommand2(const char *cmd,
         /* Mark expected seen (DO NOT return here) */
         if (!expected_seen && expected && strstr(line, expected)) {
             expected_seen = 1;
-            print("[AT] expected matched: %s\r\n", expected);
+            AT_TRACE_LOG("[AT] expected matched: %s\r\n", expected);
             /* keep waiting for OK/ERROR */
         }
 
         /* OK terminator */
         if (!strcmp(line, "OK")) {
-            print("[AT] OK\r\n");
-            print("[AT] expected_seen=%d\r\n", expected_seen);
-            print("================ AT END (OK) ==================\r\n");
+            AT_TRACE_LOG("[AT] OK\r\n");
+            AT_TRACE_LOG("[AT] expected_seen=%d\r\n", expected_seen);
+            AT_TRACE_LOG("================ AT END (OK) ==================\r\n");
             at_rx_active = 0;
             if (g_at_mutex) osMutexRelease(g_at_mutex);
             return expected_seen ? 1 : 0;
@@ -1710,10 +1768,10 @@ uint8_t SIM800_SendATCommand2(const char *cmd,
     }
 
     /* Timeout */
-    print("[AT] TIMEOUT after %lu ms\r\n", (unsigned long)timeout_ms);
-    print("[AT] Cmd=%s\r\n", (cmd && cmd[0]) ? cmd : "NULL/EMPTY");
-    print("[AT] expected_seen=%d\r\n", expected_seen);
-    print("================ AT END (TIMEOUT) =============\r\n");
+    AT_TRACE_LOG("[AT] TIMEOUT after %lu ms\r\n", (unsigned long)timeout_ms);
+    AT_TRACE_TEXT("[AT] Cmd=", cmd);
+    AT_TRACE_LOG("[AT] expected_seen=%d\r\n", expected_seen);
+    AT_TRACE_LOG("================ AT END (TIMEOUT) =============\r\n");
 
     at_rx_active = 0;
     if (g_at_mutex) osMutexRelease(g_at_mutex);
@@ -1745,14 +1803,14 @@ uint8_t SendCommandWithRetry(const char *cmd,
 
         bool flush = at_should_flush(cmd);
 
-        print("\r\n[TRY %d/%d] flush=%d\r\n", i + 1, retries, flush ? 1 : 0);
+        AT_TRACE_LOG("\r\n[TRY %d/%d] flush=%d\r\n", i + 1, retries, flush ? 1 : 0);
 
         if (SIM800_SendATCommand2(cmd, expected, timeout_ms, flush)) {
-            print("✔ COMMAND SUCCESS\r\n");
+            AT_TRACE_LOG("[AT] command success\r\n");
             return 1;
         }
 
-        print("✖ COMMAND FAILED, retrying...\r\n");
+        AT_TRACE_LOG("[AT] command failed, retrying\r\n");
         app_watchdog_mark_task(APP_WATCHDOG_TASK_RUNTIME);
         app_debug_led_run_once();
         app_watchdog_refresh();
@@ -1766,14 +1824,16 @@ uint8_t SendCommandWithRetry(const char *cmd,
 uint8_t GPRS_Init(const char *apn)
 {
     char cmd[128];
+    const char *apn_u = (apn && apn[0]) ? apn : APN;
+
+    print("[GPRS] starting PDP setup apn=%s\r\n", apn_u);
 
     if (!SendCommandWithRetry("ATE0", NULL, 2000, 2)) return 0;
 
     // Show verbose modem error causes instead of plain "ERROR".
     (void)SendCommandWithRetry("AT+CMEE=2", "OK", 2000, 1);
 
-    snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"IP\",\"%s\"",
-             (apn && apn[0]) ? apn : APN);
+    snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"IP\",\"%s\"", apn_u);
 
     if (!SendCommandWithRetry(cmd, NULL, 8000, 2)) return 0;
 
@@ -1789,6 +1849,7 @@ uint8_t GPRS_Init(const char *apn)
     if (!SendCommandWithRetry("AT+CGACT?", "+CGACT: 1,1", 5000, 1)) return 0;
     if (!SendCommandWithRetry("AT+CGPADDR=1", "+CGPADDR: 1,", 5000, 2)) return 0;
 
+    print("[GPRS] connected and IP context active\r\n");
     return 1;
 }
 
@@ -1797,7 +1858,7 @@ void GetIMEI(void)
 {
     char line[64];
     uint32_t t0;
-    print("inside IMEI READ\r\n");
+    print("[MODEM] reading IMEI\r\n");
     memset(imei, 0, sizeof(imei));
     at_rx_active = 1;
     u2_flush_all();
@@ -1816,14 +1877,14 @@ void GetIMEI(void)
         if (all_digits && (int)strlen(line) >= 14) {
             strncpy(imei, line, 15);
             imei[15] = 0;
-            print("IMEI: %s\r\n", imei);
+            print("[MODEM] IMEI ready imei=%s\r\n", imei);
             at_rx_active = 0;
             (void)SIM800_SendATCommand2("", NULL, 300, false);
             return;
         }
     }
     at_rx_active = 0;
-    print("IMEI read FAIL\r\n");
+    print("[MODEM][ERR] IMEI read failed\r\n");
 }
 
 void WaitForNetworkAndBlinkLED(void)

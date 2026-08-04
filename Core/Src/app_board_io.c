@@ -59,6 +59,7 @@ static const PinDef g_dis[] = {
 
 #define ADC_MAX_COUNTS 4095U
 #define ADC_VREF_MV    3320U
+#define APP_ADC_DEBUG_PRINT 0U
 
 static ADC_HandleTypeDef *s_hadc = NULL;
 
@@ -355,16 +356,6 @@ void app_adc_read_all_mv(uint32_t out10_mv[10])
   raw[8] = adc1_read_avg(ADC_CHANNEL_4, 16);  // AI_9  PA4
   raw[9] = adc1_read_avg(ADC_CHANNEL_5, 16);  // AI_10 PA5
 
-  const char *pin_name[10] = {
-    "PC0", "PC1", "PC2", "PC3", "PA0",
-    "PA1", "PA2", "PA3", "PA4", "PA5"
-  };
-
-  const char *scale_name[10] = {
-    "1.00", "1.00", "3.94", "3.94", "3.94",
-    "3.94", "3.94", "3.94", "3.94", "3.94"
-  };
-
   for (int i = 0; i < 10; i++)
   {
     uint32_t pin_mv = adc_to_mV(raw[i]);
@@ -378,6 +369,17 @@ void app_adc_read_all_mv(uint32_t out10_mv[10])
 
     out10_mv[i] = final_mv;
 
+#if APP_ADC_DEBUG_PRINT
+    const char *pin_name[10] = {
+      "PC0", "PC1", "PC2", "PC3", "PA0",
+      "PA1", "PA2", "PA3", "PA4", "PA5"
+    };
+
+    const char *scale_name[10] = {
+      "1.00", "1.00", "3.94", "3.94", "3.94",
+      "3.94", "3.94", "3.94", "3.94", "3.94"
+    };
+
     print("[ADC] AI_%d pin=%s raw=%u pin_mv=%lu final_mv=%lu scale=%s\r\n",
           i + 1,
           pin_name[i],
@@ -385,6 +387,7 @@ void app_adc_read_all_mv(uint32_t out10_mv[10])
           (unsigned long)pin_mv,
           (unsigned long)final_mv,
           scale_name[i]);
+#endif
   }
 }
 /* ---------- public init ---------- */

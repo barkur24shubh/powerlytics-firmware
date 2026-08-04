@@ -9,6 +9,7 @@
 #include "comm_manager.h"
 #include "app_modbus_payload.h"
 #include "app_health.h"
+#include "app_sd_card.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -728,6 +729,7 @@ uint8_t app_flash_log_upload_one(void)
     const char *net_status;
     const char *gprs_status;
     const char *mqtt_status;
+    const char *sd_status = app_sd_is_available() ? "mounted" : "not_mounted";
 
     json_escape(msg, sizeof(msg), r.message);
     json_escape(module, sizeof(module), r.module);
@@ -778,7 +780,8 @@ uint8_t app_flash_log_upload_one(void)
                 "\"mb\":\"ok\","
                 "\"flash\":\"ok\","
                 "\"rtc\":\"ok\","
-                "\"wdg\":\"ok\""
+                "\"wdg\":\"ok\","
+                "\"sd\":\"%s\""
              "}"
              "}",
              api_key_esc,
@@ -799,14 +802,17 @@ uint8_t app_flash_log_upload_one(void)
              sim_status,
              net_status,
              gprs_status,
-             mqtt_status);
+             mqtt_status,
+             sd_status);
 
-    print("[FLOG_UPLOAD] found slot=%u seq=%lu jsonLen=%u\r\n",
+    print("[FLOG_UPLOAD] uploading log slot=%u seq=%lu module=%s event=%s count=%ld jsonLen=%u\r\n",
           slot,
           (unsigned long)r.seq,
+          module,
+          event,
+          (long)effective_record_count(slot, &r),
           (unsigned)strlen(json));
 
-    print("[FLOG_UPLOAD] json=%s\r\n", json);
     print("[FLOG_UPLOAD] before MQTT publish\r\n");
 
     uint8_t ok = MQTT_Publish(topic_d2c_logs, json);

@@ -56,6 +56,23 @@ always built and flashed together:
 OTA firmware binaries must be generated from this project after the linker
 change, because the app is linked to run from `0x08008000`.
 
+## Recent Firmware Changes
+
+Latest main-branch update:
+
+- Disabled raw AT command transcript logging by default. Terminal logs now show
+  high-level events such as MQTT connected, subscribed, published, config
+  applied, and GPRS connected.
+- Removed full JSON/API-key payload prints from terminal debug paths.
+- Disabled per-channel ADC value prints by default to keep runtime logs readable.
+- Added SD-card status into cloud diagnostic log module status.
+- Simplified SD-card error logs to timestamp, severity, and clear diagnostic
+  message only.
+- Filtered noisy transport/debug lines from SD-card logs, including AT traces,
+  raw modem echoes, ADC dumps, and repeated flash-upload plumbing logs.
+- Built/flashed using UTC build time so RTC boot sync writes UTC timestamps when
+  the device RTC is older than the firmware build time.
+
 ## Build
 
 Build from the `Debug` directory using STM32CubeIDE generated makefiles:

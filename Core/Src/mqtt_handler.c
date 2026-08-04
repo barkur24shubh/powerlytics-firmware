@@ -783,6 +783,17 @@ static void mqtt_build_failure_message(char *dst,
              sig);
 }
 
+static const char *mqtt_topic_kind(const char *topic)
+{
+    if (!topic || !topic[0]) return "unknown";
+    if (strcmp(topic, topic_d2c_telemetry) == 0) return "telemetry";
+    if (strcmp(topic, topic_d2c_logs) == 0) return "log";
+    if (strcmp(topic, topic_d2c_health) == 0) return "health";
+    if (strcmp(topic, topic_d2c_message) == 0) return "message";
+    if (strcmp(topic, topic_c2d_commands) == 0) return "command";
+    return "custom";
+}
+
 /* =========================================================
    Topics
    ========================================================= */
@@ -809,7 +820,9 @@ void Prepare_MQTT_Topics(void)
     snprintf(topic_d2c_health, sizeof(topic_d2c_health),
              "d2c/%s/health", device_id);
 
-    print("[MQTT] Topics prepared for deviceId=%s\r\n", device_id);
+    print("[MQTT] topics ready imei=%s commandTopic=%s\r\n",
+          device_id,
+          topic_c2d_commands);
 }
 
 /* =========================================================
@@ -826,11 +839,11 @@ uint8_t MQTT_Connect(const char *host, int port, const char *user, const char *p
     const char *user_u = (user && user[0]) ? user : MQTT_USERNAME;
     const char *pass_u = (pass && pass[0]) ? pass : MQTT_PASSWORD;
 
-    print("MQTT: Starting Connection (TLS)...\r\n");
+    print("[MQTT] connecting to broker host=%s port=%d\r\n", host_u, port_u);
 
     /* 1. Reset Session (flush_rx = true to clear previous noise) */
     /* 1. Reset/Cleanup previous MQTT session */
-    print("MQTT: Cleaning previous session...\r\n");
+    print("[MQTT] cleaning previous modem MQTT session\r\n");
 
     fail_stage = "CLEANUP_DISC";
     (void)SIM800_SendATCommand2("AT+CMQTTDISC=0,120", "OK", 3000, true);
@@ -874,15 +887,13 @@ uint8_t MQTT_Connect(const char *host, int port, const char *user, const char *p
              "AT+CMQTTCONNECT=0,\"%s:%d\",%u,1,\"%s\",\"%s\"",
              host_u, port_u, MQTT_KEEPALIVE_SECONDS, user_u, pass_u);
 
-    print("Connecting to Broker: %s:%d\r\n", host_u, port_u);
-
     /* --- ASYNC FIX ---
      * Step A: Send the command and wait for the modem's immediate "OK".
      * We use flush_rx=true here to ensure the buffer is clean before sending.
      */
     fail_stage = "CONNECT_OK";
     if (!SIM800_SendATCommand2(cmd, "OK", MQTT_CONNECT_CMD_OK_TIMEOUT_MS, true)) {
-        print("MQTT CONNECT command did not return OK within timeout\r\n");
+        print("[MQTT][ERR] connect command was not accepted by modem\r\n");
         goto fail;
     }
 
@@ -890,14 +901,14 @@ uint8_t MQTT_Connect(const char *host, int port, const char *user, const char *p
      * We use u2rx_wait_for because the success message might take several seconds
      * while the TLS handshake completes.
      */
-    print("Waiting for Cloud Ack (TLS Handshake)...\r\n");
+    print("[MQTT] waiting for broker connection confirmation\r\n");
     fail_stage = "CONNECT_URC";
     if (!u2rx_wait_for(&g_u2rx, "+CMQTTCONNECT: 0,0", MQTT_CONNECT_URC_TIMEOUT_MS)) {
-        print("MQTT Connection Failed or Timed Out (No URC seen)\r\n");
+        print("[MQTT][ERR] broker connection was not confirmed\r\n");
         goto fail;
     }
 
-    print("MQTT Connected (TLS, no-verify)\r\n");
+    print("[MQTT] connected\r\n");
     lastMQTTSuccessTime = HAL_GetTick();
     s_consecutive_mqtt_connect_fail = 0;
     return 1;
@@ -916,7 +927,7 @@ uint8_t MQTT_Connect(const char *host, int port, const char *user, const char *p
                                    "MQTT connect",
                                    fail_stage);
 
-        print("MQTT Connect FAIL -> stage=%s consecutive=%u detail=%s\r\n",
+        print("[MQTT][ERR] connect failed stage=%s consecutive=%u detail=%s\r\n",
               fail_stage,
               s_consecutive_mqtt_connect_fail,
               failure_msg);
@@ -993,11 +1004,11 @@ uint8_t MQTT_Subscribe(const char *topic)
     }
 
     if (!u2rx_wait_for(&g_u2rx, "+CMQTTSUB: 0,0", 10000)) {
-        print("Subscribe FAIL: no +CMQTTSUB success URC\r\n");
+        print("[MQTT][ERR] subscribe was not confirmed by broker\r\n");
         goto fail;
     }
 
-    print("Subscribed OK\r\n");
+    print("[MQTT] subscribed to downlink topic=%s\r\n", topic_u);
     s_consecutive_mqtt_subscribe_fail = 0;
     return 1;
 
@@ -1055,7 +1066,7 @@ uint8_t MQTT_Publish(const char *topic, const char *payload)
      * If previous publish failed badly, give modem time to recover.
      */
     if ((int32_t)(now - s_mqtt_publish_block_until_tick) < 0) {
-        print("MQTT PUB skipped: publish cooldown active\r\n");
+        print("[MQTT PUB] skipped: modem publish cooldown active\r\n");
         s_last_publish_attempted = 0U;
         s_last_publish_stage = "COOLDOWN";
         return 0;
@@ -1073,11 +1084,14 @@ uint8_t MQTT_Publish(const char *topic, const char *payload)
     s_last_mqtt_publish_attempt_tick = HAL_GetTick();
 
     char cmd[128];
+    print("[MQTT PUB] sending %s payloadLen=%lu\r\n",
+          mqtt_topic_kind(topic),
+          (unsigned long)strlen(payload));
 
     snprintf(cmd, sizeof(cmd), "AT+CMQTTTOPIC=0,%d", (int)strlen(topic));
     fail_stage = "TOPIC_PROMPT";
     if (!SendCommandWithRetry(cmd, ">", MQTT_PUBLISH_TOPIC_PROMPT_MS, 1)) {
-        print("MQTT PUB failed: topic prompt timeout\r\n");
+        print("[MQTT PUB][ERR] modem did not accept publish topic\r\n");
         goto fail;
     }
 
@@ -1085,7 +1099,7 @@ uint8_t MQTT_Publish(const char *topic, const char *payload)
 
     fail_stage = "TOPIC_SEND";
     if (!SendCommandWithRetry(topic, "OK", MQTT_PUBLISH_TOPIC_SEND_MS, 1)) {
-        print("MQTT PUB failed: topic send failed\r\n");
+        print("[MQTT PUB][ERR] topic send failed\r\n");
         goto fail;
     }
 
@@ -1094,7 +1108,7 @@ uint8_t MQTT_Publish(const char *topic, const char *payload)
     snprintf(cmd, sizeof(cmd), "AT+CMQTTPAYLOAD=0,%d", (int)strlen(payload));
     fail_stage = "PAYLOAD_PROMPT";
     if (!SendCommandWithRetry(cmd, ">", MQTT_PUBLISH_PAYLOAD_PROMPT_MS, 1)) {
-        print("MQTT PUB failed: payload prompt timeout\r\n");
+        print("[MQTT PUB][ERR] modem did not accept publish payload\r\n");
         goto fail;
     }
 
@@ -1102,7 +1116,7 @@ uint8_t MQTT_Publish(const char *topic, const char *payload)
 
     fail_stage = "PAYLOAD_SEND";
     if (!SendCommandWithRetry(payload, "OK", MQTT_PUBLISH_PAYLOAD_SEND_MS, 1)) {
-        print("MQTT PUB failed: payload send failed\r\n");
+        print("[MQTT PUB][ERR] payload send failed\r\n");
         goto fail;
     }
 
@@ -1110,17 +1124,19 @@ uint8_t MQTT_Publish(const char *topic, const char *payload)
 
     fail_stage = "PUB_CMD_OK";
     if (!SendCommandWithRetry("AT+CMQTTPUB=0,1,60", "OK", MQTT_PUBLISH_CMD_OK_TIMEOUT_MS, 1)) {
-        print("MQTT PUB command rejected\r\n");
+        print("[MQTT PUB][ERR] publish command was rejected by modem\r\n");
         goto fail;
     }
 
     fail_stage = "PUB_URC";
     if (!u2rx_wait_for(&g_u2rx, "+CMQTTPUB: 0,0", MQTT_PUBLISH_URC_TIMEOUT_MS)) {
-        print("MQTT PUB failed: no +CMQTTPUB success URC\r\n");
+        print("[MQTT PUB][ERR] broker publish acknowledgement timed out\r\n");
         goto fail;
     }
 
-    print("MQTT PUB confirmed: +CMQTTPUB: 0,0\r\n");
+    print("[MQTT PUB] published %s payloadLen=%lu\r\n",
+          mqtt_topic_kind(topic),
+          (unsigned long)strlen(payload));
 
     lastMQTTSuccessTime = HAL_GetTick();
     s_last_publish_stage = "OK";
@@ -1129,6 +1145,10 @@ uint8_t MQTT_Publish(const char *topic, const char *payload)
 fail:
     s_last_publish_stage = fail_stage;
     s_mqtt_publish_block_until_tick = HAL_GetTick() + MQTT_PUBLISH_FAIL_COOLDOWN_MS;
+    print("[MQTT PUB][ERR] failed %s payloadLen=%lu stage=%s\r\n",
+          mqtt_topic_kind(topic),
+          (unsigned long)strlen(payload),
+          fail_stage);
     mqtt_log_diag("publish", fail_stage);
     return 0;
 }
@@ -1296,7 +1316,7 @@ char* MQTT_Subscriber_Run(void)
     // 5. Check for footer
     (void)u2rx_wait_for(&g_u2rx, "+CMQTTRXEND", 500);
 
-    print("[MQTT RX] Total Expected: %d, Actually Read: %d\r\n", reported_len, got);
+    print("[MQTT RX] downlink payload read len=%d expected=%d\r\n", got, reported_len);
     if (got != reported_len) {
         print("[MQTT RX][ERR] incomplete payload discarded\r\n");
         return NULL;
@@ -1327,7 +1347,10 @@ static void publish_actuation_ack(const char *actuation_id,
              actuation_id,
              status);
 
-    print("[ACT] ACK publish: %s\r\n", ack);
+    print("[ACT] acknowledgement sending actuationId=%s status=%s payloadLen=%lu\r\n",
+          actuation_id,
+          status,
+          (unsigned long)strlen(ack));
 
     MQTT_Publish(topic_d2c_message, ack);
 }
@@ -1394,7 +1417,7 @@ void handle_downlink_cjson(const char *payload_str)
 
     cJSON *root = cJSON_Parse(payload_str);
     if (!root) {
-        print("CFG: JSON parse failed\r\n");
+        print("[CONFIG][ERR] downlink JSON parse failed\r\n");
 
         app_log_push(APP_LOG_ERROR,
                      "CONFIG",
@@ -1538,8 +1561,8 @@ void handle_downlink_cjson(const char *payload_str)
                strlen(hash_base_min),
                hash_calc);
 
-    print("Calculated Hash: %s\r\n", hash_calc);
-    print("Provided Hash:   %s\r\n", hash->valuestring);
+    print("[CONFIG] hash calculated len=%lu validation=disabled\r\n",
+          (unsigned long)strlen(hash_calc));
 
     /*
      * Hash check is currently disabled in your file.

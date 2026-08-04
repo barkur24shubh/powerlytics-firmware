@@ -40,7 +40,9 @@ static uint8_t process_downlink_once(const char *tag)
 
     if (rx && rx[0])
     {
-        print("[%s] %s\r\n", tag, rx);
+        print("[%s] downlink received len=%lu\r\n",
+              tag,
+              (unsigned long)strlen(rx));
         handle_downlink_cjson(rx);
         app_debug_led_event(DEBUG_LED_EVENT_DOWNLINK);
         return 1U;
