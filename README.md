@@ -33,7 +33,7 @@ from the local production config for deployment/OTA preparation.
 Before publishing a new OTA version:
 
 ```sh
-./scripts/set_firmware_version.sh 1.0.7 production-logs
+./scripts/set_firmware_version.sh 1.0.8 2026-08-05-ota-stability
 TZ=UTC ./scripts/flash_ota_pair.sh
 ./scripts/package_current_artifacts.sh
 ```
@@ -73,6 +73,10 @@ change, because the app is linked to run from `0x08008000`.
 
 Latest main-branch update:
 
+- Released firmware `1.0.8` from the latest stable code for OTA retesting.
+- Reduced OTA TCP range size and moved OTA request/header buffers out of the
+  runtime task stack to improve modem download stability.
+- Increased runtime task stack headroom for OTA download/install operations.
 - Disabled raw AT command transcript logging by default. Terminal logs now show
   high-level events such as MQTT connected, subscribed, published, config
   applied, and GPRS connected.

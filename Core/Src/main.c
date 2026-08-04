@@ -88,7 +88,7 @@ DMA_HandleTypeDef hdma_usart6_tx;
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 1024 * 12,
+  .stack_size = 1024 * 16,
   .priority = (osPriority_t) osPriorityNormal,
 };
 

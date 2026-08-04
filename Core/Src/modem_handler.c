@@ -148,7 +148,7 @@ static void modem_print_text_or_summary(const char *prefix, const char *text)
 #define HTTP_OTA_LOG(...) do { if (HTTP_OTA_DEBUG_PRINT) { print(__VA_ARGS__); } } while (0)
 
 #define TCP_OTA_SOCKET_ID       1U
-#define TCP_OTA_RANGE_SIZE      4096U
+#define TCP_OTA_RANGE_SIZE      2048U
 #define TCP_OTA_RX_READ_SIZE    512U
 #define TCP_OTA_HEADER_MAX      1024U
 #define TCP_OTA_CHUNK_RETRIES   6U
@@ -169,6 +169,8 @@ static uint8_t s_http_ota_chunk[HTTP_OTA_CHUNK_SIZE];
 static uint8_t s_tcp_ota_range_buf[TCP_OTA_RANGE_SIZE];
 static uint8_t s_tcp_ota_verify_buf[TCP_OTA_RANGE_SIZE];
 static uint8_t s_tcp_ota_rx_buf[TCP_OTA_RX_READ_SIZE];
+static char s_tcp_ota_request[512];
+static char s_tcp_ota_headers[TCP_OTA_HEADER_MAX];
 static const char *s_http_ota_last_error = "none";
 static char s_http_ota_last_error_buf[40];
 
@@ -972,8 +974,6 @@ static uint8_t modem_tcp_http_download_range_locked(const char *host,
                                                     uint8_t *out,
                                                     uint32_t *out_len)
 {
-    char request[512];
-    char headers[TCP_OTA_HEADER_MAX];
     uint32_t header_len = 0U;
     uint8_t header_done = 0U;
     uint32_t body_len = 0U;
@@ -989,14 +989,14 @@ static uint8_t modem_tcp_http_download_range_locked(const char *host,
     }
 
     *out_len = 0U;
-    memset(headers, 0, sizeof(headers));
+    memset(s_tcp_ota_headers, 0, sizeof(s_tcp_ota_headers));
 
     if (!modem_tcp_open_locked(host, 80U)) {
         return 0U;
     }
 
-    snprintf(request,
-             sizeof(request),
+    snprintf(s_tcp_ota_request,
+             sizeof(s_tcp_ota_request),
              "GET %s HTTP/1.1\r\n"
              "Host: %s\r\n"
              "Range: bytes=%lu-%lu\r\n"
@@ -1007,7 +1007,8 @@ static uint8_t modem_tcp_http_download_range_locked(const char *host,
              (unsigned long)start,
              (unsigned long)(start + len - 1U));
 
-    if (!modem_tcp_send_http_request_locked(request, (uint32_t)strlen(request))) {
+    if (!modem_tcp_send_http_request_locked(s_tcp_ota_request,
+                                            (uint32_t)strlen(s_tcp_ota_request))) {
         modem_tcp_close_locked();
         return 0U;
     }
@@ -1036,32 +1037,32 @@ static uint8_t modem_tcp_http_download_range_locked(const char *host,
         uint32_t pos = 0U;
         while (pos < (uint32_t)got) {
             if (!header_done) {
-                if (header_len >= (sizeof(headers) - 1U)) {
+                if (header_len >= (sizeof(s_tcp_ota_headers) - 1U)) {
                     modem_http_set_last_error("tcp_http_header_too_large");
                     modem_tcp_close_locked();
                     return 0U;
                 }
 
-                headers[header_len++] = (char)s_tcp_ota_rx_buf[pos++];
-                headers[header_len] = '\0';
+                s_tcp_ota_headers[header_len++] = (char)s_tcp_ota_rx_buf[pos++];
+                s_tcp_ota_headers[header_len] = '\0';
 
                 if (header_len >= 4U &&
-                    headers[header_len - 4U] == '\r' &&
-                    headers[header_len - 3U] == '\n' &&
-                    headers[header_len - 2U] == '\r' &&
-                    headers[header_len - 1U] == '\n') {
+                    s_tcp_ota_headers[header_len - 4U] == '\r' &&
+                    s_tcp_ota_headers[header_len - 3U] == '\n' &&
+                    s_tcp_ota_headers[header_len - 2U] == '\r' &&
+                    s_tcp_ota_headers[header_len - 1U] == '\n') {
                     const char *cl = NULL;
                     const char *cr = NULL;
                     header_done = 1U;
 
-                    if (sscanf(headers, "HTTP/%*s %d", &http_status) != 1 ||
+                    if (sscanf(s_tcp_ota_headers, "HTTP/%*s %d", &http_status) != 1 ||
                         http_status != 206) {
                         modem_http_set_last_error_status("tcp_http_status", http_status);
                         modem_tcp_close_locked();
                         return 0U;
                     }
 
-                    cl = modem_tcp_find_header_value(headers, "Content-Length:");
+                    cl = modem_tcp_find_header_value(s_tcp_ota_headers, "Content-Length:");
                     if (!cl || sscanf(cl, "%d", &content_len) != 1 ||
                         content_len != (int)len) {
                         modem_http_set_last_error("tcp_http_len_mismatch");
@@ -1069,7 +1070,7 @@ static uint8_t modem_tcp_http_download_range_locked(const char *host,
                         return 0U;
                     }
 
-                    cr = modem_tcp_find_header_value(headers, "Content-Range:");
+                    cr = modem_tcp_find_header_value(s_tcp_ota_headers, "Content-Range:");
                     if (!cr ||
                         sscanf(cr, "bytes %lu-%lu/%lu", &cr_start, &cr_end, &cr_total) != 3 ||
                         cr_start != (unsigned long)start ||

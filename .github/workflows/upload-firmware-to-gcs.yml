@@ -6,11 +6,11 @@ on:
       firmware_version:
         description: Firmware version to publish
         required: true
-        default: "1.0.7"
+        default: "1.0.8"
       firmware_build:
         description: Firmware build label
         required: true
-        default: "2026-08-04-production-logs"
+        default: "2026-08-05-ota-stability"
       device_model:
         description: Target device model
         required: true
