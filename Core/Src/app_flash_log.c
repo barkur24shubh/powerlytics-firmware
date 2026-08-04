@@ -10,6 +10,7 @@
 #include "app_modbus_payload.h"
 #include "app_health.h"
 #include "app_sd_card.h"
+#include "app_firmware.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -764,6 +765,7 @@ uint8_t app_flash_log_upload_one(void)
              "\"s\":\"%s\","
              "\"ts\":\"%s\","
              "\"up\":%lu,"
+             "\"fw\":\"%s\","
              "\"lvl\":\"%s\","
              "\"module\":\"%s\","
              "\"event\":\"%s\","
@@ -791,6 +793,7 @@ uint8_t app_flash_log_upload_one(void)
              log_status_from_level((app_log_level_t)r.level),
              r.ts,
              (unsigned long)r.tick_ms,
+             APP_FIRMWARE_VERSION,
              app_log_level_name((app_log_level_t)r.level),
              module,
              event,

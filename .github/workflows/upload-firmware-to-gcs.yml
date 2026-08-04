@@ -6,11 +6,11 @@ on:
       firmware_version:
         description: Firmware version to publish
         required: true
-        default: "1.0.0"
+        default: "1.0.7"
       firmware_build:
         description: Firmware build label
         required: true
-        default: "manual"
+        default: "2026-08-04-production-logs"
       device_model:
         description: Target device model
         required: true
@@ -94,6 +94,18 @@ jobs:
               exit 1
             fi
           done
+
+          if ! grep -a -q "${FIRMWARE_VERSION}" "${ARTIFACT_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.bin"; then
+            echo "::error::Firmware artifact does not contain embedded version ${FIRMWARE_VERSION}."
+            echo "::error::Update Core/Inc/app_firmware.h, rebuild, and refresh artifacts before publishing."
+            exit 1
+          fi
+
+          if ! grep -a -q '"sd":"%s"' "${ARTIFACT_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.bin"; then
+            echo "::error::Firmware artifact does not contain the v2 log SD-status field."
+            echo "::error::The artifacts directory is stale; rebuild and refresh artifacts before publishing."
+            exit 1
+          fi
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2

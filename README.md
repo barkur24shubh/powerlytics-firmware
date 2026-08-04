@@ -30,6 +30,19 @@ fresh artifacts from a clean configuration and publish them deliberately.
 The artifacts currently committed under `artifacts/` were generated deliberately
 from the local production config for deployment/OTA preparation.
 
+Before publishing a new OTA version:
+
+```sh
+./scripts/set_firmware_version.sh 1.0.7 production-logs
+TZ=UTC ./scripts/flash_ota_pair.sh
+./scripts/package_current_artifacts.sh
+```
+
+`Core/Inc/app_firmware.h` is the embedded firmware identity source. The GitHub
+Action validates that the uploaded OTA binary actually contains the workflow
+firmware version before it publishes to GCS, so a stale binary cannot be
+accidentally labelled as a newer release.
+
 ## OTA Bootloader
 
 The device now uses a small first-stage bootloader:
@@ -66,6 +79,8 @@ Latest main-branch update:
 - Removed full JSON/API-key payload prints from terminal debug paths.
 - Disabled per-channel ADC value prints by default to keep runtime logs readable.
 - Added SD-card status into cloud diagnostic log module status.
+- Added embedded firmware version into cloud diagnostic logs and boot-log
+  message text for easier remote traceability.
 - Simplified SD-card error logs to timestamp, severity, and clear diagnostic
   message only.
 - Filtered noisy transport/debug lines from SD-card logs, including AT traces,

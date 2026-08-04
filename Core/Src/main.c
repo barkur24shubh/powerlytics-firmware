@@ -206,7 +206,8 @@ static void app_store_device_boot_log(uint32_t boot_count)
 
     snprintf(message,
              sizeof(message),
-             "device booted reason=%s csr=0x%08lX",
+             "device booted fw=%s reason=%s csr=0x%08lX",
+             APP_FIRMWARE_VERSION,
              reason,
              (unsigned long)csr);
 
