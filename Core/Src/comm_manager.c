@@ -4,6 +4,7 @@
 #include "stm32f4xx_hal.h"
 
 #include "app_log.h"
+#include "app_modbus_payload.h"
 #include "config.h"
 #include "debug_uart.h"
 #include "modem_handler.h"
@@ -92,6 +93,8 @@ static uint8_t s_consecutive_mqtt_subscribe_fail = 0;
 static uint8_t s_consecutive_publish_fail = 0;
 static uint8_t s_consecutive_mqtt_disconnect_fail = 0;
 static uint8_t s_consecutive_soft_reset_fail = 0;
+static uint8_t s_gsm_time_validation_logged = 0;
+static uint8_t s_gsm_time_validation_attempts = 0;
 
 extern char imei[20];
 
@@ -266,6 +269,50 @@ static void clear_all_failure_counters(void)
 {
     clear_network_counters();
     clear_mqtt_counters();
+}
+
+static void log_validated_gsm_time_once(const char *reason)
+{
+    char gsm_ts[24];
+    char message[96];
+
+    if (s_gsm_time_validation_logged ||
+        s_gsm_time_validation_attempts >= 3U) {
+        return;
+    }
+
+    if (!app_modbus_payload_has_valid_config()) {
+        return;
+    }
+
+    s_gsm_time_validation_attempts++;
+
+    if (!modem_get_network_time_utc(gsm_ts, sizeof(gsm_ts))) {
+        print("[COMM][GSM_TIME] not valid yet attempt=%u reason=%s\r\n",
+              s_gsm_time_validation_attempts,
+              reason ? reason : "");
+        return;
+    }
+
+    snprintf(message,
+             sizeof(message),
+             "validated gsm network time gsmTs=%s reason=%s",
+             gsm_ts,
+             reason ? reason : "");
+
+    app_log_critical(APP_LOG_ERROR,
+                     "MODEM",
+                     "GSM_TIME_VALIDATED",
+                     message,
+                     0,
+                     0,
+                     "NONE");
+
+    s_gsm_time_validation_logged = 1U;
+
+    print("[COMM][GSM_TIME] validated ts=%s reason=%s\r\n",
+          gsm_ts,
+          reason ? reason : "");
 }
 
 static void request_soft_reset(comm_error_t err,
@@ -770,6 +817,7 @@ void comm_manager_run_once(void)
         }
 
         s_consecutive_gprs_fail = 0;
+        log_validated_gsm_time_once("GPRS_READY");
         reset_backoff();
         set_state(COMM_STATE_MQTT_CONNECT);
         break;
@@ -894,6 +942,7 @@ void comm_manager_run_once(void)
         s_last_error = COMM_ERR_NONE;
         s_health.online_enter_count++;
         s_consecutive_mqtt_subscribe_fail = 0;
+        log_validated_gsm_time_once("MQTT_READY");
         recovery_clear_if_not_publish();
 
         reset_backoff();

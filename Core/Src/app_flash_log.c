@@ -205,6 +205,35 @@ static void extract_stage(char *dst, uint32_t dst_len, const char *message)
     }
 }
 
+static void extract_gsm_ts(char *dst, uint32_t dst_len, const char *message)
+{
+    const char *p;
+    uint32_t i = 0U;
+
+    if (!dst || dst_len == 0U) return;
+    safe_copy(dst, dst_len, "unknown");
+
+    if (!message) {
+        return;
+    }
+
+    p = strstr(message, "gsmTs=");
+    if (!p) {
+        return;
+    }
+
+    p += 6;
+    while (*p != '\0' && *p != ' ' && *p != ',' && i + 1U < dst_len) {
+        dst[i++] = *p++;
+    }
+
+    dst[i] = '\0';
+
+    if (dst[0] == '\0') {
+        safe_copy(dst, dst_len, "unknown");
+    }
+}
+
 static const char *log_status_from_level(app_log_level_t level)
 {
     switch (level) {
@@ -744,6 +773,8 @@ uint8_t app_flash_log_upload_one(void)
     safe_copy(gsm_ts, sizeof(gsm_ts), "unknown");
     if (same_text(r.event, "DEVICE_BOOT")) {
         (void)modem_get_network_time_utc(gsm_ts, sizeof(gsm_ts));
+    } else if (same_text(r.event, "GSM_TIME_VALIDATED")) {
+        extract_gsm_ts(gsm_ts, sizeof(gsm_ts), r.message);
     }
     module_status_from_error(last_error,
                              &sim_status,
