@@ -33,7 +33,7 @@ from the local production config for deployment/OTA preparation.
 Before publishing a new OTA version:
 
 ```sh
-./scripts/set_firmware_version.sh 1.0.9 2026-08-05-gsm-time-log
+./scripts/set_firmware_version.sh 1.0.10 2026-08-05-gsm-time-filter
 TZ=UTC ./scripts/flash_ota_pair.sh
 ./scripts/package_current_artifacts.sh
 ```
@@ -73,6 +73,8 @@ change, because the app is linked to run from `0x08008000`.
 
 Latest main-branch update:
 
+- Firmware `1.0.10` filters invalid SIM7600C default clock values such as
+  `70/01/01`, so `gsmTs` reports `unknown` until real network time is available.
 - Added a SIM7600C `AT+CCLK?` diagnostic read and included the parsed modem
   network UTC time as `gsmTs` in cloud log JSON. This is diagnostic-only and
   does not update the STM32 RTC yet.

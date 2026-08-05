@@ -2314,7 +2314,12 @@ uint8_t modem_get_network_time_utc(char *out_iso_utc, uint32_t out_len)
                 }
             }
 
-            if (year >= 2024 &&
+            /*
+             * Some SIM7600C units return the default clock as 70/01/01 before
+             * NITZ/network time is available. Treat far-future dates as invalid
+             * so cloud logs show "unknown" instead of a misleading timestamp.
+             */
+            if (year >= 2024 && year <= 2035 &&
                 mo >= 1 && mo <= 12 &&
                 dd >= 1 && dd <= modem_days_in_month(year, mo) &&
                 hh >= 0 && hh <= 23 &&
