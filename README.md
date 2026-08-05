@@ -33,7 +33,7 @@ from the local production config for deployment/OTA preparation.
 Before publishing a new OTA version:
 
 ```sh
-./scripts/set_firmware_version.sh 1.0.8 2026-08-05-ota-stability
+./scripts/set_firmware_version.sh 1.0.9 2026-08-05-gsm-time-log
 TZ=UTC ./scripts/flash_ota_pair.sh
 ./scripts/package_current_artifacts.sh
 ```
@@ -73,6 +73,9 @@ change, because the app is linked to run from `0x08008000`.
 
 Latest main-branch update:
 
+- Added a SIM7600C `AT+CCLK?` diagnostic read and included the parsed modem
+  network UTC time as `gsmTs` in cloud log JSON. This is diagnostic-only and
+  does not update the STM32 RTC yet.
 - Released firmware `1.0.8` from the latest stable code for OTA retesting.
 - Reduced OTA TCP range size and moved OTA request/header buffers out of the
   runtime task stack to improve modem download stability.

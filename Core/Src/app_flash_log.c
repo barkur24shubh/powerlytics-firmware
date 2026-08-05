@@ -11,6 +11,7 @@
 #include "app_health.h"
 #include "app_sd_card.h"
 #include "app_firmware.h"
+#include "modem_handler.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -725,6 +726,7 @@ uint8_t app_flash_log_upload_one(void)
     char recovery[40];
     char stage[24];
     char signal[16];
+    char gsm_ts[24];
     char last_error[48];
     const char *sim_status;
     const char *net_status;
@@ -739,6 +741,10 @@ uint8_t app_flash_log_upload_one(void)
     json_escape(last_error, sizeof(last_error), r.last_error);
     extract_stage(stage, sizeof(stage), r.message);
     get_signal_quality(signal, sizeof(signal));
+    safe_copy(gsm_ts, sizeof(gsm_ts), "unknown");
+    if (same_text(r.event, "DEVICE_BOOT")) {
+        (void)modem_get_network_time_utc(gsm_ts, sizeof(gsm_ts));
+    }
     module_status_from_error(last_error,
                              &sim_status,
                              &net_status,
@@ -764,6 +770,7 @@ uint8_t app_flash_log_upload_one(void)
              "\"fid\":\"%s-%lu\","
              "\"s\":\"%s\","
              "\"ts\":\"%s\","
+             "\"gsmTs\":\"%s\","
              "\"up\":%lu,"
              "\"fw\":\"%s\","
              "\"lvl\":\"%s\","
@@ -792,6 +799,7 @@ uint8_t app_flash_log_upload_one(void)
              (unsigned long)record_first_seen_tick(&r),
              log_status_from_level((app_log_level_t)r.level),
              r.ts,
+             gsm_ts,
              (unsigned long)r.tick_ms,
              APP_FIRMWARE_VERSION,
              app_log_level_name((app_log_level_t)r.level),
