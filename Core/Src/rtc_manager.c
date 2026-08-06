@@ -8,6 +8,9 @@ extern RTC_HandleTypeDef hrtc;
 
 #define RTC_BKP_BOOT_COUNT_DR RTC_BKP_DR2
 
+static uint8_t s_rtc_backup_magic_seen = 0U;
+static uint8_t s_rtc_time_preserved = 0U;
+
 static void rtc_enable_backup_domain_access(void)
 {
     __HAL_RCC_PWR_CLK_ENABLE();
@@ -225,9 +228,13 @@ void rtc_init_with_bkp_once(void)
 
     if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR1) == RTC_BKP_MAGIC)
     {
+        s_rtc_backup_magic_seen = 1U;
         print("[RTC] Backup magic OK. Time preserved.\r\n");
         return;
     }
+
+    s_rtc_backup_magic_seen = 0U;
+    s_rtc_time_preserved = 0U;
 
     /*
      * First boot/default time.
@@ -325,6 +332,11 @@ uint8_t rtc_is_datetime_valid(void)
     return 1U;
 }
 
+uint8_t rtc_time_was_preserved(void)
+{
+    return s_rtc_time_preserved;
+}
+
 uint8_t rtc_get_datetime(rtc_datetime_t *dt)
 {
     if (!dt)
@@ -410,6 +422,7 @@ void rtc_sync_to_build_time_if_newer(void)
     if (!rtc_build_datetime(&build))
     {
         print("[RTC][WARN] build time parse failed\r\n");
+        s_rtc_time_preserved = (s_rtc_backup_magic_seen && rtc_get_datetime(&current)) ? 1U : 0U;
         return;
     }
 
@@ -430,9 +443,11 @@ void rtc_sync_to_build_time_if_newer(void)
                   build.minute,
                   build.second);
         }
+        s_rtc_time_preserved = 0U;
         return;
     }
 
+    s_rtc_time_preserved = s_rtc_backup_magic_seen ? 1U : 0U;
     print("[RTC] preserved time is newer than build time\r\n");
 }
 

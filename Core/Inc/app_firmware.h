@@ -5,8 +5,8 @@
  * Device/firmware identity used by telemetry, health, logs and OTA targeting.
  * Update these values intentionally for each production release.
  */
-#define APP_FIRMWARE_VERSION       "1.0.11"
-#define APP_FIRMWARE_BUILD         "2026-08-05-gsm-time-validation-log"
+#define APP_FIRMWARE_VERSION       "1.0.12"
+#define APP_FIRMWARE_BUILD         "2026-08-06-rtc-build-time-boot-status"
 #define APP_DEVICE_MODEL           "leam 1.3"
 #define APP_OTA_SCHEMA_VERSION     1U
 

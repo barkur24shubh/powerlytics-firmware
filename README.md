@@ -33,9 +33,8 @@ from the local production config for deployment/OTA preparation.
 Before publishing a new OTA version:
 
 ```sh
-./scripts/set_firmware_version.sh 1.0.11 2026-08-05-gsm-time-validation-log
+./scripts/set_firmware_version.sh 1.0.12 2026-08-06-rtc-build-time-boot-status
 TZ=UTC ./scripts/flash_ota_pair.sh
-./scripts/package_current_artifacts.sh
 ```
 
 `Core/Inc/app_firmware.h` is the embedded firmware identity source. The GitHub
@@ -73,6 +72,9 @@ change, because the app is linked to run from `0x08008000`.
 
 Latest main-branch update:
 
+- Firmware `1.0.12` removes GSM network-time reads from log upload and uses
+  RTC build-time sync only. Boot logs now include `time_preserved` and report
+  RTC status from the device RTC instead of hardcoding it.
 - Firmware `1.0.11` adds a separate `GSM_TIME_VALIDATED` cloud log after
   cellular network/PDP readiness. It includes `gsmTs` only when SIM7600C
   `AT+CCLK?` returns a validated network UTC timestamp.

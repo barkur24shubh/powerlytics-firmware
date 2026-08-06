@@ -6,11 +6,11 @@ on:
       firmware_version:
         description: Firmware version to publish
         required: true
-        default: "1.0.11"
+        default: "1.0.12"
       firmware_build:
         description: Firmware build label
         required: true
-        default: "2026-08-05-gsm-time-validation-log"
+        default: "2026-08-06-rtc-build-time-boot-status"
       device_model:
         description: Target device model
         required: true

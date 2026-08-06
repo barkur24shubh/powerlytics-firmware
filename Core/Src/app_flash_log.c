@@ -11,7 +11,6 @@
 #include "app_health.h"
 #include "app_sd_card.h"
 #include "app_firmware.h"
-#include "modem_handler.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -205,32 +204,61 @@ static void extract_stage(char *dst, uint32_t dst_len, const char *message)
     }
 }
 
-static void extract_gsm_ts(char *dst, uint32_t dst_len, const char *message)
+static void extract_time_preserved(char *dst, uint32_t dst_len, const char *message)
 {
     const char *p;
     uint32_t i = 0U;
 
     if (!dst || dst_len == 0U) return;
-    safe_copy(dst, dst_len, "unknown");
+    safe_copy(dst, dst_len, "false");
 
     if (!message) {
         return;
     }
 
-    p = strstr(message, "gsmTs=");
+    p = strstr(message, "time_preserved=");
     if (!p) {
         return;
     }
 
-    p += 6;
+    p += 15;
     while (*p != '\0' && *p != ' ' && *p != ',' && i + 1U < dst_len) {
         dst[i++] = *p++;
     }
 
     dst[i] = '\0';
 
-    if (dst[0] == '\0') {
-        safe_copy(dst, dst_len, "unknown");
+    if (strcmp(dst, "true") != 0) {
+        safe_copy(dst, dst_len, "false");
+    }
+}
+
+static void extract_rtc_status(char *dst, uint32_t dst_len, const char *message)
+{
+    const char *p;
+    uint32_t i = 0U;
+
+    if (!dst || dst_len == 0U) return;
+    safe_copy(dst, dst_len, rtc_is_datetime_valid() ? "ok" : "fail");
+
+    if (!message) {
+        return;
+    }
+
+    p = strstr(message, "rtc=");
+    if (!p) {
+        return;
+    }
+
+    p += 4;
+    while (*p != '\0' && *p != ' ' && *p != ',' && i + 1U < dst_len) {
+        dst[i++] = *p++;
+    }
+
+    dst[i] = '\0';
+
+    if (strcmp(dst, "ok") != 0) {
+        safe_copy(dst, dst_len, "fail");
     }
 }
 
@@ -756,6 +784,8 @@ uint8_t app_flash_log_upload_one(void)
     char stage[24];
     char signal[16];
     char gsm_ts[24];
+    char time_preserved[6];
+    char rtc_status[8];
     char last_error[48];
     const char *sim_status;
     const char *net_status;
@@ -771,10 +801,11 @@ uint8_t app_flash_log_upload_one(void)
     extract_stage(stage, sizeof(stage), r.message);
     get_signal_quality(signal, sizeof(signal));
     safe_copy(gsm_ts, sizeof(gsm_ts), "unknown");
+    safe_copy(time_preserved, sizeof(time_preserved), "false");
+    safe_copy(rtc_status, sizeof(rtc_status), rtc_is_datetime_valid() ? "ok" : "fail");
     if (same_text(r.event, "DEVICE_BOOT")) {
-        (void)modem_get_network_time_utc(gsm_ts, sizeof(gsm_ts));
-    } else if (same_text(r.event, "GSM_TIME_VALIDATED")) {
-        extract_gsm_ts(gsm_ts, sizeof(gsm_ts), r.message);
+        extract_time_preserved(time_preserved, sizeof(time_preserved), r.message);
+        extract_rtc_status(rtc_status, sizeof(rtc_status), r.message);
     }
     module_status_from_error(last_error,
                              &sim_status,
@@ -802,6 +833,7 @@ uint8_t app_flash_log_upload_one(void)
              "\"s\":\"%s\","
              "\"ts\":\"%s\","
              "\"gsmTs\":\"%s\","
+             "\"time_preserved\":%s,"
              "\"up\":%lu,"
              "\"fw\":\"%s\","
              "\"lvl\":\"%s\","
@@ -819,7 +851,7 @@ uint8_t app_flash_log_upload_one(void)
                 "\"mqtt\":\"%s\","
                 "\"mb\":\"ok\","
                 "\"flash\":\"ok\","
-                "\"rtc\":\"ok\","
+                "\"rtc\":\"%s\","
                 "\"wdg\":\"ok\","
                 "\"sd\":\"%s\""
              "}"
@@ -831,6 +863,7 @@ uint8_t app_flash_log_upload_one(void)
              log_status_from_level((app_log_level_t)r.level),
              r.ts,
              gsm_ts,
+             time_preserved,
              (unsigned long)r.tick_ms,
              APP_FIRMWARE_VERSION,
              app_log_level_name((app_log_level_t)r.level),
@@ -845,6 +878,7 @@ uint8_t app_flash_log_upload_one(void)
              net_status,
              gprs_status,
              mqtt_status,
+             rtc_status,
              sd_status);
 
     print("[FLOG_UPLOAD] uploading log slot=%u seq=%lu module=%s event=%s count=%ld jsonLen=%u\r\n",

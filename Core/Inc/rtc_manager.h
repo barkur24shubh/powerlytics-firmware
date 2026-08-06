@@ -31,6 +31,7 @@ uint8_t rtc_set_datetime_utc(uint16_t year,
 void rtc_sync_to_build_time_if_newer(void);
 void rtc_get_datetime_strings(char *ts_buf, int ts_buf_sz);
 uint8_t rtc_is_datetime_valid(void);
+uint8_t rtc_time_was_preserved(void);
 uint32_t rtc_increment_boot_count(void);
 
 #ifdef __cplusplus

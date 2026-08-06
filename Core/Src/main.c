@@ -195,6 +195,8 @@ static void app_store_device_boot_log(uint32_t boot_count)
     char message[96];
     uint32_t csr = app_gateway_reset_csr();
     const char *reason = app_gateway_reset_reason_name();
+    uint8_t rtc_ok = rtc_is_datetime_valid();
+    uint8_t time_preserved = rtc_time_was_preserved();
 
     if (!app_modbus_payload_has_valid_config())
     {
@@ -206,10 +208,12 @@ static void app_store_device_boot_log(uint32_t boot_count)
 
     snprintf(message,
              sizeof(message),
-             "device booted fw=%s reason=%s csr=0x%08lX",
+             "device booted fw=%s reason=%s csr=0x%08lX time_preserved=%s rtc=%s",
              APP_FIRMWARE_VERSION,
              reason,
-             (unsigned long)csr);
+             (unsigned long)csr,
+             time_preserved ? "true" : "false",
+             rtc_ok ? "ok" : "fail");
 
     uint8_t ok = app_flash_log_write(APP_LOG_ERROR,
                                      "SYSTEM",
@@ -219,11 +223,13 @@ static void app_store_device_boot_log(uint32_t boot_count)
                                      (int32_t)csr,
                                      "NONE");
 
-    print("[BOOT_LOG] stored=%u reason=%s bootCount=%lu csr=0x%08lX\r\n",
+    print("[BOOT_LOG] stored=%u reason=%s bootCount=%lu csr=0x%08lX time_preserved=%u rtc=%s\r\n",
           ok,
           reason,
           (unsigned long)boot_count,
-          (unsigned long)csr);
+          (unsigned long)csr,
+          time_preserved,
+          rtc_ok ? "ok" : "fail");
 }
 
 static void app_store_pending_fault_log(void)
