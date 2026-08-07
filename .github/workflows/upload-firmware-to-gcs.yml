@@ -6,7 +6,7 @@ on:
       firmware_version:
         description: Firmware version to publish
         required: true
-        default: "1.00"
+        default: "1.0.0"
       firmware_build:
         description: Firmware build label
         required: true

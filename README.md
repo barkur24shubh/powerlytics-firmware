@@ -33,7 +33,7 @@ from the local production config for deployment/OTA preparation.
 Before publishing a new OTA version:
 
 ```sh
-./scripts/set_firmware_version.sh 1.00 2026-08-07-stable-ist-iso8601
+./scripts/set_firmware_version.sh 1.0.0 2026-08-07-stable-ist-iso8601
 ./scripts/flash_ota_pair.sh
 ```
 
@@ -70,7 +70,7 @@ change, because the app is linked to run from `0x08008000`.
 
 ## Recent Firmware Changes
 
-Stable `1.00` baseline:
+Stable `1.0.0` baseline:
 
 - RTC timestamps are kept in IST and emitted as ISO-8601 values with `+05:30`
   so cloud event time parsing stays correct.
