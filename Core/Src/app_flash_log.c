@@ -17,7 +17,7 @@
 #include <stddef.h>
 
 #define APP_FLASH_LOG_MAGIC           0x4C4F4731UL   /* LOG1 */
-#define APP_FLASH_LOG_VERSION         1UL
+#define APP_FLASH_LOG_VERSION         2UL
 
 /*
  * W25Q16 = 2MB.
@@ -52,7 +52,7 @@ typedef struct {
     int32_t value1;
     int32_t value2;
 
-    char ts[24];
+    char ts[32];
     char module[12];
     char event[32];
     char message[96];
@@ -64,7 +64,7 @@ typedef struct {
 
     uint32_t first_seen_tick;
 
-    uint8_t reserved_tail[512 - 4*7 - 4 - 4*2 - 24 - 12 - 32 - 96 - 20 - 32 - 24 - 40 - 4];
+    uint8_t reserved_tail[512 - 4*7 - 4 - 4*2 - 32 - 12 - 32 - 96 - 20 - 32 - 24 - 40 - 4];
 } app_flash_log_record_t;
 
 typedef char app_flash_log_record_size_check[

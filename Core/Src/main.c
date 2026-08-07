@@ -146,6 +146,19 @@ static void app_print_firmware_identity(const char *tag)
         APP_DEVICE_MODEL);
 }
 
+static void app_print_rtc_boot_time(void)
+{
+    char ts[32];
+    uint8_t rtc_ok = rtc_is_datetime_valid();
+
+    rtc_get_datetime_strings(ts, sizeof(ts));
+
+    print("[RTC][BOOT] time=%s preserved=%s valid=%s\r\n",
+          ts,
+          rtc_time_was_preserved() ? "true" : "false",
+          rtc_ok ? "true" : "false");
+}
+
 static void app_print_loaded_config(const modbus_cfg_t *cfg)
 {
     if (!cfg) return;
@@ -347,7 +360,10 @@ int main(void)
   }
 
   rtc_init_with_bkp_once();
-  rtc_sync_to_build_time_if_newer();
+  if (!rtc_sync_to_code_time_once()) {
+      rtc_sync_to_build_time_if_newer();
+  }
+  app_print_rtc_boot_time();
   uint32_t boot_count = rtc_increment_boot_count();
 
   app_sd_terminal_log_enable(1U);

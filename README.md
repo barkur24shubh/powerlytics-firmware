@@ -33,8 +33,8 @@ from the local production config for deployment/OTA preparation.
 Before publishing a new OTA version:
 
 ```sh
-./scripts/set_firmware_version.sh 1.0.12 2026-08-06-rtc-build-time-boot-status
-TZ=UTC ./scripts/flash_ota_pair.sh
+./scripts/set_firmware_version.sh 1.00 2026-08-07-stable-ist-iso8601
+./scripts/flash_ota_pair.sh
 ```
 
 `Core/Inc/app_firmware.h` is the embedded firmware identity source. The GitHub
@@ -70,20 +70,16 @@ change, because the app is linked to run from `0x08008000`.
 
 ## Recent Firmware Changes
 
-Latest main-branch update:
+Stable `1.00` baseline:
 
-- Firmware `1.0.12` removes GSM network-time reads from log upload and uses
-  RTC build-time sync only. Boot logs now include `time_preserved` and report
-  RTC status from the device RTC instead of hardcoding it.
-- Firmware `1.0.11` adds a separate `GSM_TIME_VALIDATED` cloud log after
-  cellular network/PDP readiness. It includes `gsmTs` only when SIM7600C
-  `AT+CCLK?` returns a validated network UTC timestamp.
-- Firmware `1.0.10` filters invalid SIM7600C default clock values such as
-  `70/01/01`, so `gsmTs` reports `unknown` until real network time is available.
-- Added a SIM7600C `AT+CCLK?` diagnostic read and included the parsed modem
-  network UTC time as `gsmTs` in cloud log JSON. This is diagnostic-only and
-  does not update the STM32 RTC yet.
-- Released firmware `1.0.8` from the latest stable code for OTA retesting.
+- RTC timestamps are kept in IST and emitted as ISO-8601 values with `+05:30`
+  so cloud event time parsing stays correct.
+- Manual `RTC_CODE_TIME_*` values are entered as IST directly and applied once
+  when `RTC_CODE_TIME_SET_ENABLED` is enabled.
+- GSM network-time reads are removed from the RTC sync path; `gsmTs` remains
+  `unknown` for schema compatibility.
+- Boot logs include `time_preserved` and report RTC status from the device RTC
+  instead of hardcoding it.
 - Reduced OTA TCP range size and moved OTA request/header buffers out of the
   runtime task stack to improve modem download stability.
 - Increased runtime task stack headroom for OTA download/install operations.
@@ -99,8 +95,8 @@ Latest main-branch update:
   message only.
 - Filtered noisy transport/debug lines from SD-card logs, including AT traces,
   raw modem echoes, ADC dumps, and repeated flash-upload plumbing logs.
-- Built/flashed using UTC build time so RTC boot sync writes UTC timestamps when
-  the device RTC is older than the firmware build time.
+- Built/flashed using local IST build time for easier field debugging on
+  India-only deployments.
 
 ## Build
 

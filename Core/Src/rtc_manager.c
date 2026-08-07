@@ -7,6 +7,8 @@
 extern RTC_HandleTypeDef hrtc;
 
 #define RTC_BKP_BOOT_COUNT_DR RTC_BKP_DR2
+#define RTC_BKP_CODE_TIME_DATE_DR RTC_BKP_DR3
+#define RTC_BKP_CODE_TIME_TIME_DR RTC_BKP_DR4
 
 static uint8_t s_rtc_backup_magic_seen = 0U;
 static uint8_t s_rtc_time_preserved = 0U;
@@ -79,6 +81,31 @@ static uint8_t rtc_month_from_build_str(const char *month)
     return 1U;
 }
 
+static void rtc_format_datetime_ist(char *ts_buf, int ts_buf_sz, const rtc_datetime_t *dt)
+{
+    if (!ts_buf || ts_buf_sz <= 0)
+    {
+        return;
+    }
+
+    if (!dt)
+    {
+        snprintf(ts_buf, (size_t)ts_buf_sz, "1970-01-01T00:00:00+05:30");
+        return;
+    }
+
+    snprintf(ts_buf,
+             (size_t)ts_buf_sz,
+             "20%02u-%02u-%02uT%02u:%02u:%02u+05:30",
+             (unsigned int)(dt->year - 2000U),
+             dt->month,
+             dt->day,
+             dt->hour,
+             dt->minute,
+             dt->second);
+}
+
+#if RTC_CODE_TIME_SET_ENABLED
 static int rtc_datetime_compare(const rtc_datetime_t *a, const rtc_datetime_t *b)
 {
     if (a->year != b->year) return (a->year < b->year) ? -1 : 1;
@@ -89,6 +116,7 @@ static int rtc_datetime_compare(const rtc_datetime_t *a, const rtc_datetime_t *b
     if (a->second != b->second) return (a->second < b->second) ? -1 : 1;
     return 0;
 }
+#endif
 
 static uint8_t rtc_build_datetime(rtc_datetime_t *dt)
 {
@@ -371,7 +399,7 @@ uint8_t rtc_get_datetime(rtc_datetime_t *dt)
     return 1U;
 }
 
-uint8_t rtc_set_datetime_utc(uint16_t year,
+uint8_t rtc_set_datetime_ist(uint16_t year,
                              uint8_t month,
                              uint8_t day,
                              uint8_t hour,
@@ -414,41 +442,130 @@ uint8_t rtc_set_datetime_utc(uint16_t year,
     return 1U;
 }
 
+uint8_t rtc_sync_to_code_time_once(void)
+{
+#if RTC_CODE_TIME_SET_ENABLED
+    rtc_enable_backup_domain_access();
+
+    rtc_datetime_t current = {0};
+    rtc_datetime_t code_time = {
+        .year = (uint16_t)RTC_CODE_TIME_YEAR,
+        .month = (uint8_t)RTC_CODE_TIME_MONTH,
+        .day = (uint8_t)RTC_CODE_TIME_DAY,
+        .hour = (uint8_t)RTC_CODE_TIME_HOUR,
+        .minute = (uint8_t)RTC_CODE_TIME_MINUTE,
+        .second = (uint8_t)RTC_CODE_TIME_SECOND
+    };
+
+    uint32_t date_stamp = (RTC_CODE_TIME_YEAR * 10000UL) +
+                          (RTC_CODE_TIME_MONTH * 100UL) +
+                          RTC_CODE_TIME_DAY;
+    uint32_t time_stamp = (RTC_CODE_TIME_HOUR * 10000UL) +
+                          (RTC_CODE_TIME_MINUTE * 100UL) +
+                          RTC_CODE_TIME_SECOND;
+
+    if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_CODE_TIME_DATE_DR) == date_stamp &&
+        HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_CODE_TIME_TIME_DR) == time_stamp &&
+        rtc_get_datetime(&current) &&
+        rtc_datetime_compare(&current, &code_time) >= 0)
+    {
+        char current_ts[32];
+
+        rtc_format_datetime_ist(current_ts, sizeof(current_ts), &current);
+        s_rtc_time_preserved = s_rtc_backup_magic_seen ? 1U : 0U;
+        print("[RTC] code time already applied date=%lu time=%lu current=%s\r\n",
+              (unsigned long)date_stamp,
+              (unsigned long)time_stamp,
+              current_ts);
+        return 1U;
+    }
+
+    if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_CODE_TIME_DATE_DR) == date_stamp &&
+        HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_CODE_TIME_TIME_DR) == time_stamp)
+    {
+        if (rtc_get_datetime(&current))
+        {
+            char current_ts[32];
+            char target_ts[32];
+
+            rtc_format_datetime_ist(current_ts, sizeof(current_ts), &current);
+            rtc_format_datetime_ist(target_ts, sizeof(target_ts), &code_time);
+            print("[RTC][WARN] code time stamp matched but RTC is older current=%s target=%s; reapplying\r\n",
+                  current_ts,
+                  target_ts);
+        }
+        else
+        {
+            print("[RTC][WARN] code time stamp matched but RTC is invalid; reapplying\r\n");
+        }
+    }
+
+    if (!rtc_set_datetime_ist((uint16_t)RTC_CODE_TIME_YEAR,
+                              (uint8_t)RTC_CODE_TIME_MONTH,
+                              (uint8_t)RTC_CODE_TIME_DAY,
+                              (uint8_t)RTC_CODE_TIME_HOUR,
+                              (uint8_t)RTC_CODE_TIME_MINUTE,
+                              (uint8_t)RTC_CODE_TIME_SECOND))
+    {
+        print("[RTC][ERR] code time set failed\r\n");
+        return 0U;
+    }
+
+    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_CODE_TIME_DATE_DR, date_stamp);
+    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_CODE_TIME_TIME_DR, time_stamp);
+    s_rtc_time_preserved = 0U;
+
+    {
+        char code_ts[32];
+
+        rtc_format_datetime_ist(code_ts, sizeof(code_ts), &code_time);
+        print("[RTC] synced to code time %s\r\n", code_ts);
+    }
+
+    return 1U;
+#else
+    print("[RTC] code time set disabled\r\n");
+    return 0U;
+#endif
+}
+
 void rtc_sync_to_build_time_if_newer(void)
 {
     rtc_datetime_t build = {0};
     rtc_datetime_t current = {0};
 
-    if (!rtc_build_datetime(&build))
+    if (rtc_get_datetime(&current))
     {
-        print("[RTC][WARN] build time parse failed\r\n");
-        s_rtc_time_preserved = (s_rtc_backup_magic_seen && rtc_get_datetime(&current)) ? 1U : 0U;
+        char current_ts[32];
+
+        rtc_format_datetime_ist(current_ts, sizeof(current_ts), &current);
+        s_rtc_time_preserved = s_rtc_backup_magic_seen ? 1U : 0U;
+        print("[RTC] valid RTC present; build time sync skipped current=%s\r\n",
+              current_ts);
         return;
     }
 
-    if (!rtc_get_datetime(&current) || rtc_datetime_compare(&current, &build) < 0)
+    if (!rtc_build_datetime(&build))
     {
-        if (rtc_set_datetime_utc(build.year,
-                                 build.month,
-                                 build.day,
-                                 build.hour,
-                                 build.minute,
-                                 build.second))
-        {
-            print("[RTC] synced to build time %04u-%02u-%02uT%02u:%02u:%02uZ\r\n",
-                  build.year,
-                  build.month,
-                  build.day,
-                  build.hour,
-                  build.minute,
-                  build.second);
-        }
+        print("[RTC][WARN] build time parse failed\r\n");
         s_rtc_time_preserved = 0U;
         return;
     }
 
-    s_rtc_time_preserved = s_rtc_backup_magic_seen ? 1U : 0U;
-    print("[RTC] preserved time is newer than build time\r\n");
+    if (rtc_set_datetime_ist(build.year,
+                             build.month,
+                             build.day,
+                             build.hour,
+                             build.minute,
+                             build.second))
+    {
+        char build_ts[32];
+
+        rtc_format_datetime_ist(build_ts, sizeof(build_ts), &build);
+        print("[RTC] synced invalid RTC to build time %s\r\n",
+              build_ts);
+    }
+    s_rtc_time_preserved = 0U;
 }
 
 void rtc_get_datetime_strings(char *ts_buf, int ts_buf_sz)
@@ -462,17 +579,9 @@ void rtc_get_datetime_strings(char *ts_buf, int ts_buf_sz)
 
     if (!rtc_get_datetime(&dt))
     {
-        snprintf(ts_buf, (size_t)ts_buf_sz, "1970-01-01T00:00:00Z");
+        snprintf(ts_buf, (size_t)ts_buf_sz, "1970-01-01T00:00:00+05:30");
         return;
     }
 
-    snprintf(ts_buf,
-             (size_t)ts_buf_sz,
-             "20%02u-%02u-%02uT%02u:%02u:%02uZ",
-             (unsigned int)(dt.year - 2000U),
-             dt.month,
-             dt.day,
-             dt.hour,
-             dt.minute,
-             dt.second);
+    rtc_format_datetime_ist(ts_buf, ts_buf_sz, &dt);
 }
