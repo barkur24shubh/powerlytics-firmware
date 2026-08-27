@@ -12,6 +12,7 @@ typedef enum
 } debug_led_event_t;
 
 void app_debug_led_init(void);
+void app_debug_led_boot_pulse(void);
 void app_debug_led_run_once(void);
 void app_debug_led_event(debug_led_event_t event);
 void app_debug_led_set_ota_active(uint8_t active);

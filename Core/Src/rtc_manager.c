@@ -9,6 +9,9 @@ extern RTC_HandleTypeDef hrtc;
 #define RTC_BKP_BOOT_COUNT_DR RTC_BKP_DR2
 #define RTC_BKP_CODE_TIME_DATE_DR RTC_BKP_DR3
 #define RTC_BKP_CODE_TIME_TIME_DR RTC_BKP_DR4
+#define RTC_BKP_BOOT_STAGE_DR RTC_BKP_DR14
+#define RTC_BKP_BOOT_STAGE_MAGIC 0xB0070000UL
+#define RTC_BKP_BOOT_STAGE_MASK  0x000000FFUL
 
 static uint8_t s_rtc_backup_magic_seen = 0U;
 static uint8_t s_rtc_time_preserved = 0U;
@@ -40,6 +43,73 @@ static const char *rtc_clock_name(uint32_t rtcsel)
         default:
             return "NONE";
     }
+}
+
+const char *rtc_boot_stage_name(rtc_boot_stage_t stage)
+{
+    switch (stage)
+    {
+        case RTC_BOOT_STAGE_RTC:
+            return "RTC";
+
+        case RTC_BOOT_STAGE_SD_INIT:
+            return "SD_INIT";
+
+        case RTC_BOOT_STAGE_FLASH_INIT:
+            return "FLASH_INIT";
+
+        case RTC_BOOT_STAGE_CONFIG_LOAD:
+            return "CONFIG_LOAD";
+
+        case RTC_BOOT_STAGE_FLASH_LOG_INIT:
+            return "FLASH_LOG_INIT";
+
+        case RTC_BOOT_STAGE_RTOS_START:
+            return "RTOS_START";
+
+        case RTC_BOOT_STAGE_NONE:
+        default:
+            return "NONE";
+    }
+}
+
+static uint32_t rtc_boot_stage_encode(rtc_boot_stage_t stage)
+{
+    return RTC_BKP_BOOT_STAGE_MAGIC | ((uint32_t)stage & RTC_BKP_BOOT_STAGE_MASK);
+}
+
+static rtc_boot_stage_t rtc_boot_stage_decode(uint32_t raw)
+{
+    if ((raw & ~RTC_BKP_BOOT_STAGE_MASK) != RTC_BKP_BOOT_STAGE_MAGIC)
+    {
+        return RTC_BOOT_STAGE_NONE;
+    }
+
+    uint32_t stage = raw & RTC_BKP_BOOT_STAGE_MASK;
+    if (stage > (uint32_t)RTC_BOOT_STAGE_RTOS_START)
+    {
+        return RTC_BOOT_STAGE_NONE;
+    }
+
+    return (rtc_boot_stage_t)stage;
+}
+
+rtc_boot_stage_t rtc_boot_stage_previous(void)
+{
+    rtc_enable_backup_domain_access();
+    __HAL_RCC_RTC_ENABLE();
+    hrtc.Instance = RTC;
+
+    return rtc_boot_stage_decode(HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_BOOT_STAGE_DR));
+}
+
+void rtc_boot_stage_mark(rtc_boot_stage_t stage)
+{
+    rtc_enable_backup_domain_access();
+    __HAL_RCC_RTC_ENABLE();
+    hrtc.Instance = RTC;
+
+    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_BOOT_STAGE_DR, rtc_boot_stage_encode(stage));
 }
 
 static uint8_t rtc_weekday_from_date(uint16_t year, uint8_t month, uint8_t day)

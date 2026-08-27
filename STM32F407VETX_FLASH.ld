@@ -36,6 +36,8 @@
 /* Entry Point */
 ENTRY(Reset_Handler)
 
+APP_CONFIG_FLASH_ADDR = 0x08060000;
+
 /* Highest address of the user mode stack */
 _estack = ORIGIN(RAM) + LENGTH(RAM); /* end of "RAM" Ram type memory */
 
@@ -168,6 +170,8 @@ SECTIONS
     . = ALIGN(4);
     _eccmram = .;       /* create a global symbol at ccmram end */
   } >CCMRAM AT> FLASH
+  __app_flash_load_end = LOADADDR(.ccmram) + SIZEOF(.ccmram);
+  ASSERT(__app_flash_load_end <= APP_CONFIG_FLASH_ADDR, "Application image overlaps reserved config flash sector at 0x08060000")
 
   /* Uninitialized data section into "RAM" Ram type memory */
   . = ALIGN(4);

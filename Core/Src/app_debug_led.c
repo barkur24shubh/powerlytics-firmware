@@ -13,6 +13,7 @@
 
 #define HEARTBEAT_PERIOD_MS       2000UL
 #define HEARTBEAT_ON_MS           60UL
+#define BOOT_PULSE_ON_MS          35UL
 
 #define UPLINK_BLINK_ON_MS        900UL
 
@@ -71,6 +72,15 @@ void app_debug_led_init(void)
     s_last_heartbeat_tick = HAL_GetTick();
     s_error_active = 0;
     s_ota_active = 0;
+}
+
+void app_debug_led_boot_pulse(void)
+{
+    led_write(1);
+    app_watchdog_force_refresh();
+    HAL_Delay(BOOT_PULSE_ON_MS);
+    led_write(0);
+    app_watchdog_force_refresh();
 }
 
 void app_debug_led_set_ota_active(uint8_t active)

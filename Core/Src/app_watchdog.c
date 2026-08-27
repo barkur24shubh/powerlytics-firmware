@@ -17,6 +17,10 @@
 #define APP_WATCHDOG_LED_TIMEOUT_MS     15000UL
 #define APP_WATCHDOG_DIAG_INTERVAL_MS   5000UL
 
+#ifndef APP_WATCHDOG_FREEZE_IN_DEBUG
+#define APP_WATCHDOG_FREEZE_IN_DEBUG 0U
+#endif
+
 static volatile uint8_t s_watchdog_ready = 0U;
 static volatile uint32_t s_registered_tasks = 0U;
 static volatile uint32_t s_task_last_seen[APP_WATCHDOG_TASK_COUNT] = {0};
@@ -106,7 +110,7 @@ static uint8_t app_watchdog_tasks_healthy(void)
 
 void app_watchdog_start(void)
 {
-#ifdef DEBUG
+#if APP_WATCHDOG_FREEZE_IN_DEBUG
     __HAL_DBGMCU_FREEZE_IWDG();
 #endif
 

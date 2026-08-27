@@ -28,10 +28,10 @@ extern "C" {
 
 #define RTC_CODE_TIME_YEAR    2026U
 #define RTC_CODE_TIME_MONTH   8U
-#define RTC_CODE_TIME_DAY     7U
-#define RTC_CODE_TIME_HOUR    8U
-#define RTC_CODE_TIME_MINUTE  51U
-#define RTC_CODE_TIME_SECOND  0U
+#define RTC_CODE_TIME_DAY     8U
+#define RTC_CODE_TIME_HOUR    14U
+#define RTC_CODE_TIME_MINUTE  44U
+#define RTC_CODE_TIME_SECOND  20U
 
 typedef struct
 {
@@ -42,6 +42,17 @@ typedef struct
     uint8_t minute;
     uint8_t second;
 } rtc_datetime_t;
+
+typedef enum
+{
+    RTC_BOOT_STAGE_NONE = 0,
+    RTC_BOOT_STAGE_RTC,
+    RTC_BOOT_STAGE_SD_INIT,
+    RTC_BOOT_STAGE_FLASH_INIT,
+    RTC_BOOT_STAGE_CONFIG_LOAD,
+    RTC_BOOT_STAGE_FLASH_LOG_INIT,
+    RTC_BOOT_STAGE_RTOS_START
+} rtc_boot_stage_t;
 
 int  rtc_clock_configure_with_fallback(void);
 void rtc_init_with_bkp_once(void);
@@ -58,6 +69,9 @@ void rtc_get_datetime_strings(char *ts_buf, int ts_buf_sz);
 uint8_t rtc_is_datetime_valid(void);
 uint8_t rtc_time_was_preserved(void);
 uint32_t rtc_increment_boot_count(void);
+rtc_boot_stage_t rtc_boot_stage_previous(void);
+void rtc_boot_stage_mark(rtc_boot_stage_t stage);
+const char *rtc_boot_stage_name(rtc_boot_stage_t stage);
 
 #ifdef __cplusplus
 }

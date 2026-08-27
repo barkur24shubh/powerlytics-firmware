@@ -137,6 +137,8 @@ void StartTask02(void *argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static rtc_boot_stage_t s_previous_boot_stage = RTC_BOOT_STAGE_NONE;
+
 static void app_print_firmware_identity(const char *tag)
 {
   print("[FW][%s] version=%s build=%s model=%s\r\n",
@@ -203,13 +205,22 @@ static void app_print_loaded_config(const modbus_cfg_t *cfg)
     }
 }
 
+static void app_boot_stage_enter(rtc_boot_stage_t stage)
+{
+    rtc_boot_stage_mark(stage);
+    print("[BOOT_STAGE] current=%s\r\n", rtc_boot_stage_name(stage));
+    app_debug_led_boot_pulse();
+    app_watchdog_force_refresh();
+}
+
 static void app_store_device_boot_log(uint32_t boot_count)
 {
-    char message[96];
+    char message[128];
     uint32_t csr = app_gateway_reset_csr();
     const char *reason = app_gateway_reset_reason_name();
     uint8_t rtc_ok = rtc_is_datetime_valid();
     uint8_t time_preserved = rtc_time_was_preserved();
+    const char *prev_stage = rtc_boot_stage_name(s_previous_boot_stage);
 
     if (!app_modbus_payload_has_valid_config())
     {
@@ -221,10 +232,11 @@ static void app_store_device_boot_log(uint32_t boot_count)
 
     snprintf(message,
              sizeof(message),
-             "device booted fw=%s reason=%s csr=0x%08lX time_preserved=%s rtc=%s",
+             "device booted fw=%s reason=%s csr=0x%08lX stage=%s time_preserved=%s rtc=%s",
              APP_FIRMWARE_VERSION,
              reason,
              (unsigned long)csr,
+             prev_stage,
              time_preserved ? "true" : "false",
              rtc_ok ? "ok" : "fail");
 
@@ -236,11 +248,12 @@ static void app_store_device_boot_log(uint32_t boot_count)
                                      (int32_t)csr,
                                      "NONE");
 
-    print("[BOOT_LOG] stored=%u reason=%s bootCount=%lu csr=0x%08lX time_preserved=%u rtc=%s\r\n",
+    print("[BOOT_LOG] stored=%u reason=%s bootCount=%lu csr=0x%08lX prev_stage=%s time_preserved=%u rtc=%s\r\n",
           ok,
           reason,
           (unsigned long)boot_count,
           (unsigned long)csr,
+          prev_stage,
           time_preserved,
           rtc_ok ? "ok" : "fail");
 }
@@ -349,7 +362,16 @@ int main(void)
   app_print_firmware_identity("BOOT");
 
   app_debug_led_init();
+  app_watchdog_start();
+  print("[IWDG] started early\r\n");
+  app_watchdog_force_refresh();
 
+  s_previous_boot_stage = rtc_boot_stage_previous();
+  print("[BOOT_STAGE] previous=%s\r\n", rtc_boot_stage_name(s_previous_boot_stage));
+
+  app_boot_stage_enter(RTC_BOOT_STAGE_RTC);
+
+  app_watchdog_force_refresh();
   if (rtc_clock_configure_with_fallback() == HAL_OK)
   {
       print("[RTC] Clock source set OK\r\n");
@@ -359,24 +381,35 @@ int main(void)
       print("[RTC][ERR] Clock source config failed\r\n");
   }
 
+  app_watchdog_force_refresh();
   rtc_init_with_bkp_once();
   if (!rtc_sync_to_code_time_once()) {
       rtc_sync_to_build_time_if_newer();
   }
   app_print_rtc_boot_time();
   uint32_t boot_count = rtc_increment_boot_count();
+  app_watchdog_force_refresh();
 
+  app_boot_stage_enter(RTC_BOOT_STAGE_SD_INIT);
   app_sd_terminal_log_enable(1U);
+  app_watchdog_force_refresh();
   (void)app_sd_self_test_once();
+  app_watchdog_force_refresh();
 
   app_board_io_init(&hadc1);
 
+  app_boot_stage_enter(RTC_BOOT_STAGE_FLASH_INIT);
   app_gateway_flash_setup(&s_flash, &hspi1, GPIOB, GPIO_PIN_0);
+  app_watchdog_force_refresh();
   app_gateway_flash_test(&s_flash);
   MQTT_SetOtaFlash(&s_flash);
+  app_watchdog_force_refresh();
 
+  app_boot_stage_enter(RTC_BOOT_STAGE_CONFIG_LOAD);
   modbus_cfg_t cfg_from_flash;
+  app_watchdog_force_refresh();
   bool cfg_ok = modbus_cfg_load(&cfg_from_flash);
+  app_watchdog_force_refresh();
 
   print("Load from FLASH: %s\r\n", cfg_ok ? "VALID" : "DEFAULTS");
   app_print_loaded_config(&cfg_from_flash);
@@ -384,16 +417,23 @@ int main(void)
   debug_uart_set_enabled(modbus_cfg_debug_print_enabled(&cfg_from_flash));
   print("[DEBUG] UART print %s\r\n", debug_uart_is_enabled() ? "enabled" : "disabled");
 
+  app_boot_stage_enter(RTC_BOOT_STAGE_FLASH_LOG_INIT);
   print("[MAIN] before app_flash_log_init\r\n");
+  app_watchdog_force_refresh();
   app_flash_log_init(&s_flash);
+  app_watchdog_force_refresh();
   print("[MAIN] after app_flash_log_init pending=%u total=%u dropped=%lu deduped=%lu\r\n",
         app_flash_log_pending_count(),
         app_flash_log_total_count(),
         (unsigned long)app_flash_log_dropped_count(),
         (unsigned long)app_flash_log_deduped_count());
+  app_watchdog_force_refresh();
   app_store_device_boot_log(boot_count);
+  app_watchdog_force_refresh();
   app_store_pending_fault_log();
+  app_watchdog_force_refresh();
   app_store_sd_card_boot_log();
+  app_watchdog_force_refresh();
 
   app_gateway_basepri_recover();
   print("[MAIN] moving to RTOS init\r\n");
@@ -416,10 +456,7 @@ int main(void)
 //
 //      HAL_Delay(1000);
 //  }
-
-  app_watchdog_start();
-  print("[IWDG] started\r\n");
-
+  app_boot_stage_enter(RTC_BOOT_STAGE_RTOS_START);
   osKernelInitialize();
 
   /* USER CODE BEGIN RTOS_INIT */
@@ -450,8 +487,15 @@ int main(void)
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
   ModbusTaskHandle = osThreadNew(StartTask02, NULL, &ModbusTask_attributes);
 
-  app_watchdog_register_task(APP_WATCHDOG_TASK_RUNTIME);
-  app_watchdog_register_task(APP_WATCHDOG_TASK_LED);
+  if (defaultTaskHandle != NULL)
+  {
+      app_watchdog_register_task(APP_WATCHDOG_TASK_RUNTIME);
+      app_watchdog_register_task(APP_WATCHDOG_TASK_LED);
+  }
+  if (ModbusTaskHandle != NULL)
+  {
+      app_watchdog_register_task(APP_WATCHDOG_TASK_MODBUS);
+  }
 
   osKernelStart();
   print("Scheduler returned!\r\n");

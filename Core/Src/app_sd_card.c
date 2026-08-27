@@ -306,6 +306,14 @@ static const char *app_sd_terminal_line_severity(const char *line)
         return NULL;
     }
 
+    if (strncmp(line, "CFG ", 4U) == 0 ||
+        strncmp(line, "SLAVE[", 6U) == 0 ||
+        strncmp(line, "  READ[", 7U) == 0 ||
+        strncmp(line, "Load from FLASH:", 16U) == 0)
+    {
+        return NULL;
+    }
+
     if (app_sd_contains_ci(line, "[ERR]") ||
         app_sd_contains_ci(line, "ERROR") ||
         app_sd_contains_ci(line, "FATAL") ||
