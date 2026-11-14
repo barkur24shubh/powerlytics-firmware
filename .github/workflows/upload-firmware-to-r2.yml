@@ -256,10 +256,20 @@ jobs:
             --argjson sizeBytes "${{ steps.release.outputs.size_bytes }}" \
             '{deviceModelId:$deviceModelId,deviceModel:$deviceModel,version:$version,checksumSha256:$checksumSha256,signatureEd25519:$signatureEd25519,sizeBytes:$sizeBytes,sourceCommitSha:$sourceCommitSha,sourceRepo:$sourceRepo}')"
 
-          curl --fail-with-body --silent --show-error \
+          response_file="$(mktemp)"
+          trap 'rm -f "${response_file}"' EXIT
+          if ! http_status="$(curl --silent --show-error --output "${response_file}" --write-out '%{http_code}' \
             -X POST "${BACKEND_API_URL%/}/firmware/webhook/publish" \
             -H "x-api-key: ${FIRMWARE_WEBHOOK_API_KEY}" \
             -H "Content-Type: application/json" \
-            --data "${payload}" >/dev/null
+            --data "${payload}")"; then
+            cat "${response_file}"
+            exit 1
+          fi
+          if [[ ! "${http_status}" =~ ^2[0-9][0-9]$ ]]; then
+            echo "::error::Powerlytics publish webhook returned HTTP ${http_status}"
+            cat "${response_file}"
+            exit 1
+          fi
 
           echo "Signed image uploaded to private R2 and registered as STAGED. A compatible bootloader still requires supervised installation and bench validation before activation."
