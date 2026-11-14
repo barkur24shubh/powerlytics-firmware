@@ -6,6 +6,7 @@ BOARD_ARG="${1:-b1-beta-c}"
 TOOLBIN="${TOOLBIN:-/Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin}"
 
 source "${ROOT_DIR}/scripts/board_env.sh" "${BOARD_ARG}"
+python3 "${ROOT_DIR}/scripts/generate_ota_ca_header.py"
 
 export PATH="${TOOLBIN}:${PATH}"
 export OBJCOPY="${OBJCOPY:-${TOOLBIN}/arm-none-eabi-objcopy}"

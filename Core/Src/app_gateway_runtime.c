@@ -164,6 +164,12 @@ static uint8_t wait_for_downlink_window(uint32_t window_ms)
 
 static telemetry_result_t publish_telemetry_once(void)
 {
+    if (connectivity_ota_is_busy())
+    {
+        print("[RUNTIME] telemetry skipped: OTA active\r\n");
+        return TELEMETRY_RESULT_SKIPPED;
+    }
+
     if (!device_can_publish_cloud())
     {
         print("[PROVISION] telemetry skipped: waiting for valid config/apiKey\r\n");

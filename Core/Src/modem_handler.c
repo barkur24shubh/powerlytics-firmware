@@ -8,6 +8,7 @@
 #include "app_log.h"
 #include "app_watchdog.h"
 #include "sha256.h"
+#include "ota_root_ca.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -138,14 +139,14 @@ static void modem_print_text_or_summary(const char *prefix, const char *text)
 #define HTTP_OTA_RANGE_WINDOW  32768U
 #define HTTP_OTA_USE_RANGE_WINDOWS    1U
 #define HTTP_OTA_SSL_CONTEXT_ID       1U
-#define HTTP_OTA_CA_FILE              "ota_root_ca.pem"
+#define HTTP_OTA_CA_FILE              "ota_gts_root_r4.pem"
 #define HTTP_OTA_ACTION_MS     120000UL
 #define HTTP_OTA_READ_MS       30000UL
 #define HTTP_OTA_TAIL_WAIT_MS  80UL
 #define HTTP_OTA_TAIL_SLICE_MS 20UL
 #define HTTP_OTA_ABORT_DRAIN_MS 1200UL
 #define HTTP_OTA_ABORT_QUIET_MS 250UL
-#define HTTP_OTA_DEBUG_PRINT   0U
+#define HTTP_OTA_DEBUG_PRINT   1U
 
 #define HTTP_OTA_LOG(...) do { if (HTTP_OTA_DEBUG_PRINT) { print(__VA_ARGS__); } } while (0)
 
@@ -167,6 +168,8 @@ static void modem_print_text_or_summary(const char *prefix, const char *text)
 #define AT_TRACE_TEXT(prefix, text) do { if (debug_uart_at_is_enabled()) { modem_print_text_or_summary((prefix), (text)); } } while (0)
 
 static char s_http_ota_cmd[HTTP_OTA_CMD_MAX];
+static uint8_t s_ota_ca_ready;
+static uint8_t s_ota_tls_clock_ready;
 static uint8_t s_http_ota_chunk[HTTP_OTA_CHUNK_SIZE];
 static uint8_t s_tcp_ota_range_buf[TCP_OTA_RANGE_SIZE];
 static uint8_t s_tcp_ota_verify_buf[TCP_OTA_RANGE_SIZE];
@@ -189,6 +192,37 @@ static void modem_http_set_last_error_status(const char *prefix, int status)
              (prefix && prefix[0]) ? prefix : "status",
              status);
     s_http_ota_last_error = s_http_ota_last_error_buf;
+}
+
+static const char *modem_http_action_error_name(int status)
+{
+    switch (status) {
+    case 600: return "http_non_pdu";
+    case 601: return "http_network_error";
+    case 602: return "http_no_memory";
+    case 603: return "http_dns_error";
+    case 604: return "http_stack_busy";
+    case 701: return "tls_alert_state";
+    case 702: return "tls_unknown_error";
+    case 703: return "tls_busy";
+    case 704: return "tls_connection_closed";
+    case 705: return "tls_timeout";
+    case 706: return "tls_data_transfer_failed";
+    case 707: return "tls_memory_error";
+    case 708: return "tls_invalid_parameter";
+    case 709: return "tls_network_error";
+    case 710: return "tls_session_start_failed";
+    case 711: return "tls_wrong_state";
+    case 712: return "tls_socket_create_failed";
+    case 713: return "tls_dns_failed";
+    case 714: return "tls_socket_connect_failed";
+    case 715: return "tls_handshake_failed";
+    case 716: return "tls_socket_close_failed";
+    case 717: return "tls_no_network";
+    case 718: return "tls_send_timeout";
+    case 719: return "tls_ca_missing";
+    default: return NULL;
+    }
 }
 
 const char *modem_http_download_last_error(void)
@@ -222,6 +256,30 @@ static uint8_t modem_http_mutex_acquire_with_watchdog(uint32_t timeout_ms)
     return 0U;
 }
 
+static uint8_t modem_http_is_url_command(const char *cmd)
+{
+    static const char url_command[] = "AT+HTTPPARA=\"URL\"";
+    return cmd && strncmp(cmd, url_command, sizeof(url_command) - 1U) == 0;
+}
+
+static void modem_http_log_command(const char *prefix, const char *cmd)
+{
+    if (modem_http_is_url_command(cmd)) {
+        HTTP_OTA_LOG("%s AT+HTTPPARA=\"URL\",<redacted>\r\n", prefix);
+        return;
+    }
+    HTTP_OTA_LOG("%s %s\r\n", prefix, cmd ? cmd : "");
+}
+
+static void modem_http_log_response(const char *line)
+{
+    if (line && (strstr(line, "https://") || strstr(line, "http://"))) {
+        HTTP_OTA_LOG("[GSM->HTTP] URL-containing response redacted\r\n");
+        return;
+    }
+    HTTP_OTA_LOG("[GSM->HTTP] %s\r\n", line ? line : "");
+}
+
 static uint8_t modem_http_send_wait_ok_locked(const char *cmd,
                                               const char *expected,
                                               uint32_t timeout_ms)
@@ -234,7 +292,7 @@ static uint8_t modem_http_send_wait_ok_locked(const char *cmd,
         return 0U;
     }
 
-    HTTP_OTA_LOG("[HTTP->GSM] %s\r\n", cmd);
+    modem_http_log_command("[HTTP->GSM]", cmd);
     u2_send_cmd(cmd);
 
     while ((HAL_GetTick() - t0) < timeout_ms) {
@@ -255,11 +313,11 @@ static uint8_t modem_http_send_wait_ok_locked(const char *cmd,
             continue;
         }
 
-        HTTP_OTA_LOG("[GSM->HTTP] %s\r\n", line);
-
         if (!strcmp(line, cmd)) {
+            modem_http_log_command("[GSM->HTTP] command echo", cmd);
             continue;
         }
+        modem_http_log_response(line);
 
         if (!expected_seen && expected && strstr(line, expected)) {
             expected_seen = 1U;
@@ -274,8 +332,160 @@ static uint8_t modem_http_send_wait_ok_locked(const char *cmd,
         }
     }
 
-    HTTP_OTA_LOG("[HTTP] timeout waiting OK for %s\r\n", cmd);
+    if (modem_http_is_url_command(cmd)) {
+        HTTP_OTA_LOG("[HTTP] timeout waiting OK for URL command (value redacted)\r\n");
+    } else {
+        HTTP_OTA_LOG("[HTTP] timeout waiting OK for %s\r\n", cmd);
+    }
     return 0U;
+}
+
+static uint8_t modem_http_ca_file_exists_locked(uint8_t *out_present)
+{
+    char line[192];
+    uint32_t start = HAL_GetTick();
+    uint8_t present = 0U;
+
+    if (!out_present) return 0U;
+    *out_present = 0U;
+    u2_flush_all();
+    u2_send_cmd("AT+CCERTLIST");
+
+    while ((HAL_GetTick() - start) < 8000U) {
+        modem_http_kick_watchdog();
+        int n = u2rx_read_line(&g_u2rx, line, (int)sizeof(line), 250U);
+        if (n <= 0) {
+            osDelay(1U);
+            continue;
+        }
+
+        trim_crlf(line);
+        if (strstr(line, HTTP_OTA_CA_FILE)) present = 1U;
+        if (strstr(line, "ERROR") || strstr(line, "+CME ERROR")) return 0U;
+        if (!strcmp(line, "OK")) {
+            *out_present = present;
+            return 1U;
+        }
+    }
+
+    return 0U;
+}
+
+static uint8_t modem_http_wait_ok_after_data_locked(uint32_t timeout_ms)
+{
+    char line[192];
+    uint32_t start = HAL_GetTick();
+
+    while ((HAL_GetTick() - start) < timeout_ms) {
+        modem_http_kick_watchdog();
+        int n = u2rx_read_line(&g_u2rx, line, (int)sizeof(line), 250U);
+        if (n <= 0) {
+            osDelay(1U);
+            continue;
+        }
+
+        trim_crlf(line);
+        if (strstr(line, "ERROR") || strstr(line, "+CME ERROR")) return 0U;
+        if (!strcmp(line, "OK")) return 1U;
+    }
+
+    return 0U;
+}
+
+static uint8_t modem_http_modem_clock_is_valid_locked(void)
+{
+    char line[192];
+    uint32_t start = HAL_GetTick();
+
+    u2_flush_all();
+    u2_send_cmd("AT+CCLK?");
+    while ((HAL_GetTick() - start) < 5000U) {
+        modem_http_kick_watchdog();
+        int n = u2rx_read_line(&g_u2rx, line, (int)sizeof(line), 250U);
+        if (n <= 0) {
+            osDelay(1U);
+            continue;
+        }
+
+        trim_crlf(line);
+        unsigned year, month, day, hour, minute, second;
+        if (sscanf(line, "+CCLK: \"%2u/%2u/%2u,%2u:%2u:%2u",
+                   &year, &month, &day, &hour, &minute, &second) == 6) {
+            return (year >= 20U && month >= 1U && month <= 12U &&
+                    day >= 1U && day <= 31U && hour <= 23U &&
+                    minute <= 59U && second <= 60U) ? 1U : 0U;
+        }
+        if (!strcmp(line, "ERROR") || strstr(line, "+CME ERROR")) return 0U;
+    }
+    return 0U;
+}
+
+static uint8_t modem_http_provision_ca_locked(void)
+{
+    char cmd[128];
+    uint8_t present = 0U;
+    if (!s_ota_tls_clock_ready) {
+        if (!modem_http_send_wait_ok_locked("AT+CTZU=1", NULL, 5000U)) {
+            modem_http_set_last_error("ota_modem_network_time_enable_failed");
+            return 0U;
+        }
+        /* Use network-provided modem time. Never overwrite it with an MCU RTC
+         * that could have been initialized from a build-time fallback. */
+        uint8_t clock_valid = 0U;
+        for (uint8_t attempt = 0U; attempt < 6U; attempt++) {
+            if (modem_http_modem_clock_is_valid_locked()) {
+                clock_valid = 1U;
+                break;
+            }
+            osDelay(5000U);
+        }
+        if (!clock_valid) {
+            modem_http_set_last_error("ota_modem_network_time_unavailable");
+            return 0U;
+        }
+        s_ota_tls_clock_ready = 1U;
+    }
+
+    if (s_ota_ca_ready) return 1U;
+    if (!modem_http_ca_file_exists_locked(&present)) {
+        modem_http_set_last_error("ota_ca_list_failed");
+        return 0U;
+    }
+
+    if (!present) {
+        int n = snprintf(cmd, sizeof(cmd), "AT+CCERTDOWN=\"%s\",%u",
+                         HTTP_OTA_CA_FILE, OTA_ROOT_CA_PEM_SIZE);
+        if (n < 0 || (size_t)n >= sizeof(cmd)) {
+            modem_http_set_last_error("ota_ca_command_invalid");
+            return 0U;
+        }
+
+        u2_flush_all();
+        HTTP_OTA_LOG("[HTTP->GSM] AT+CCERTDOWN file=%s bytes=%u\r\n",
+                     HTTP_OTA_CA_FILE, OTA_ROOT_CA_PEM_SIZE);
+        u2_send_cmd(cmd);
+        if (!u2rx_wait_for(&g_u2rx, ">", 8000U)) {
+            modem_http_set_last_error("ota_ca_download_prompt_timeout");
+            return 0U;
+        }
+        if (HAL_UART_Transmit(&huart6,
+                              (uint8_t *)ota_root_ca_pem,
+                              (uint16_t)OTA_ROOT_CA_PEM_SIZE,
+                              10000U) != HAL_OK ||
+            !modem_http_wait_ok_after_data_locked(10000U)) {
+            modem_http_set_last_error("ota_ca_download_failed");
+            return 0U;
+        }
+
+        if (!modem_http_ca_file_exists_locked(&present) || !present) {
+            modem_http_set_last_error("ota_ca_install_unverified");
+            return 0U;
+        }
+    }
+
+    s_ota_ca_ready = 1U;
+    HTTP_OTA_LOG("[OTA][HTTP] trusted CA installed: %s\r\n", HTTP_OTA_CA_FILE);
+    return 1U;
 }
 
 static void modem_http_drain_until_quiet_locked(uint32_t max_ms,
@@ -344,7 +554,7 @@ static int modem_http_wait_action_locked(uint32_t timeout_ms,
             continue;
         }
 
-        HTTP_OTA_LOG("[GSM->HTTP] %s\r\n", line);
+        modem_http_log_response(line);
 
         char *p = strstr(line, "+HTTPACTION:");
         if (p) {
@@ -360,16 +570,26 @@ static int modem_http_wait_action_locked(uint32_t timeout_ms,
                 if (out_len) {
                     *out_len = (uint32_t)len;
                 }
+                if (status == 710) {
+                    snprintf(s_http_ota_cmd, sizeof(s_http_ota_cmd),
+                             "AT+CSSLCFG=%u", (unsigned)HTTP_OTA_SSL_CONTEXT_ID);
+                    HTTP_OTA_LOG("[OTA][TLS] reading back SSL context after session-start failure\r\n");
+                    if (!modem_http_send_wait_ok_locked(s_http_ota_cmd, NULL, 5000U)) {
+                        HTTP_OTA_LOG("[OTA][TLS] SSL context readback failed\r\n");
+                    }
+                }
                 return 1;
             }
         }
 
         if (strstr(line, "ERROR") || strstr(line, "+CME ERROR")) {
+            modem_http_set_last_error("http_action_modem_error");
             return 0;
         }
     }
 
     HTTP_OTA_LOG("[HTTP] no HTTPACTION URC\r\n");
+    modem_http_set_last_error("http_action_timeout");
     return 0;
 }
 
@@ -380,40 +600,58 @@ static uint8_t modem_http_start_request_locked(const char *url,
                                                int *out_status,
                                                uint32_t *out_len)
 {
+    modem_http_set_last_error("none");
     (void)modem_http_send_wait_ok_locked("AT+HTTPTERM", NULL, 5000U);
 
+    if (!strncmp(url, "https://", 8U) && !modem_http_provision_ca_locked()) {
+        HTTP_OTA_LOG("[OTA][HTTP] trusted CA provisioning failed\r\n");
+        return 0U;
+    }
+
     if (!modem_http_send_wait_ok_locked("AT+HTTPINIT", NULL, 10000U)) {
+        modem_http_set_last_error("http_init_failed");
         HTTP_OTA_LOG("[OTA][HTTP] HTTPINIT failed\r\n");
         return 0U;
     }
 
-    (void)modem_http_send_wait_ok_locked("AT+HTTPPARA=\"CID\",1", NULL, 5000U);
+    /* A76XX HTTPINIT activates the configured PDP context itself. Its
+     * AT+HTTPPARA implementation has no CID parameter; PDP context 1 is
+     * configured and activated by the modem bring-up path before OTA. */
 
     if (!strncmp(url, "https://", 8U)) {
-        if (!modem_http_send_wait_ok_locked("AT+HTTPSSL=1", NULL, 5000U)) {
-            HTTP_OTA_LOG("[OTA][HTTP] HTTPSSL enable failed/unsupported\r\n");
-            return 0U;
-        }
         /* Keep OTA HTTPS separate from the legacy MQTT TLS context. MQTT
          * currently uses context 0 without server verification. OTA context
-         * 1 must verify the server and use the provisioned trust anchor. */
-        if (!modem_http_send_wait_ok_locked("AT+CSSLCFG=\"sslversion\",1,4", NULL, 5000U) ||
-            !modem_http_send_wait_ok_locked("AT+CSSLCFG=\"authmode\",1,1", NULL, 5000U) ||
-            !modem_http_send_wait_ok_locked("AT+CSSLCFG=\"ignorelocaltime\",1,0", NULL, 5000U) ||
-            !modem_http_send_wait_ok_locked("AT+CSSLCFG=\"enableSNI\",1,1", NULL, 5000U)) {
-            HTTP_OTA_LOG("[OTA][HTTP] verified TLS context setup failed\r\n");
+         * 1 must verify the server and use the provisioned trust anchor.
+         * SIM7670C enables HTTPS from the https:// URL and HTTPPARA=SSLCFG;
+         * it does not implement the unrelated AT+HTTPSSL command. */
+        if (!modem_http_send_wait_ok_locked("AT+CSSLCFG=\"sslversion\",1,4", NULL, 5000U)) {
+            modem_http_set_last_error("tls_version_config_failed");
+            return 0U;
+        }
+        if (!modem_http_send_wait_ok_locked("AT+CSSLCFG=\"authmode\",1,1", NULL, 5000U)) {
+            modem_http_set_last_error("tls_auth_mode_config_failed");
+            return 0U;
+        }
+        if (!modem_http_send_wait_ok_locked("AT+CSSLCFG=\"ignorelocaltime\",1,0", NULL, 5000U)) {
+            modem_http_set_last_error("tls_time_validation_config_failed");
+            return 0U;
+        }
+        if (!modem_http_send_wait_ok_locked("AT+CSSLCFG=\"enableSNI\",1,1", NULL, 5000U)) {
+            modem_http_set_last_error("tls_sni_config_failed");
             return 0U;
         }
         snprintf(s_http_ota_cmd, sizeof(s_http_ota_cmd),
                  "AT+CSSLCFG=\"cacert\",%u,\"%s\"",
                  (unsigned)HTTP_OTA_SSL_CONTEXT_ID, HTTP_OTA_CA_FILE);
         if (!modem_http_send_wait_ok_locked(s_http_ota_cmd, NULL, 5000U)) {
+            modem_http_set_last_error("tls_ca_select_failed");
             HTTP_OTA_LOG("[OTA][HTTP] trusted CA selection failed\r\n");
             return 0U;
         }
         snprintf(s_http_ota_cmd, sizeof(s_http_ota_cmd),
                  "AT+HTTPPARA=\"SSLCFG\",%u", (unsigned)HTTP_OTA_SSL_CONTEXT_ID);
         if (!modem_http_send_wait_ok_locked(s_http_ota_cmd, NULL, 5000U)) {
+            modem_http_set_last_error("tls_context_select_failed");
             HTTP_OTA_LOG("[OTA][HTTP] SSL context selection failed\r\n");
             return 0U;
         }
@@ -425,6 +663,7 @@ static uint8_t modem_http_start_request_locked(const char *url,
              url);
 
     if (!modem_http_send_wait_ok_locked(s_http_ota_cmd, NULL, 15000U)) {
+        modem_http_set_last_error("http_url_set_failed");
         HTTP_OTA_LOG("[OTA][HTTP] set URL failed\r\n");
         return 0U;
     }
@@ -438,6 +677,7 @@ static uint8_t modem_http_start_request_locked(const char *url,
                  (unsigned long)range_end);
 
         if (!modem_http_send_wait_ok_locked(s_http_ota_cmd, NULL, 5000U)) {
+            modem_http_set_last_error("http_range_header_set_failed");
             HTTP_OTA_LOG("[OTA][HTTP] set Range header failed\r\n");
             return 0U;
         }
@@ -445,6 +685,7 @@ static uint8_t modem_http_start_request_locked(const char *url,
 
     u2_flush_all();
     if (!modem_http_send_wait_ok_locked("AT+HTTPACTION=0", NULL, 5000U)) {
+        modem_http_set_last_error("http_action_command_failed");
         HTTP_OTA_LOG("[OTA][HTTP] HTTPACTION command failed\r\n");
         return 0U;
     }
@@ -452,6 +693,9 @@ static uint8_t modem_http_start_request_locked(const char *url,
     if (!modem_http_wait_action_locked(HTTP_OTA_ACTION_MS,
                                        out_status,
                                        out_len)) {
+        if (!strcmp(modem_http_download_last_error(), "none")) {
+            modem_http_set_last_error("http_action_failed");
+        }
         return 0U;
     }
 
@@ -459,6 +703,14 @@ static uint8_t modem_http_start_request_locked(const char *url,
                  out_status ? *out_status : 0,
                  (unsigned long)(out_len ? *out_len : 0U),
                  use_range ? " range" : "");
+
+    if (out_status) {
+        const char *action_error = modem_http_action_error_name(*out_status);
+        if (action_error) {
+            HTTP_OTA_LOG("[OTA][HTTP] modem transport result=%s code=%d\r\n",
+                         action_error, *out_status);
+        }
+    }
 
     return 1U;
 }
@@ -534,7 +786,7 @@ static int modem_http_read_chunk_locked(uint32_t offset,
             continue;
         }
 
-        HTTP_OTA_LOG("[GSM->HTTP] %s\r\n", line);
+        modem_http_log_response(line);
 
         if (!strcmp(line, s_http_ota_cmd)) {
             continue;
@@ -593,7 +845,7 @@ static int modem_http_read_chunk_locked(uint32_t offset,
                     continue;
                 }
 
-                HTTP_OTA_LOG("[GSM->HTTP] %s\r\n", line);
+                modem_http_log_response(line);
 
                 if (!strcmp(line, "OK")) {
                     return (int)body_len;
@@ -1446,13 +1698,17 @@ uint8_t modem_http_download_to_w25q(const char *url,
                                              0U,
                                              &http_status,
                                              &action_len)) {
-            modem_http_set_last_error("http_start_failed");
+            if (!strcmp(modem_http_download_last_error(), "none")) {
+                modem_http_set_last_error("http_start_failed");
+            }
             goto done;
         }
 
         if (http_status != 200 && http_status != 206) {
             HTTP_OTA_LOG("[OTA][HTTP] rejected HTTP status=%d\r\n", http_status);
-            modem_http_set_last_error_status("http_status", http_status);
+            const char *action_error = modem_http_action_error_name(http_status);
+            if (action_error) modem_http_set_last_error(action_error);
+            else modem_http_set_last_error_status("http_status", http_status);
             goto done;
         }
 
@@ -1500,18 +1756,29 @@ uint8_t modem_http_download_to_w25q(const char *url,
 
             if (!range_open_ok || !range_status_ok) {
                 if (!range_open_ok) {
-                    HTTP_OTA_LOG("[OTA][HTTP] range open failed start=%lu\r\n",
-                                 (unsigned long)written);
-                    modem_http_set_last_error("range_open_failed");
+                    HTTP_OTA_LOG("[OTA][HTTP] range open failed start=%lu cause=%s\r\n",
+                                 (unsigned long)written,
+                                 modem_http_download_last_error());
+                    if (!strcmp(modem_http_download_last_error(), "none")) {
+                        modem_http_set_last_error("range_open_failed");
+                    }
                 } else {
                     HTTP_OTA_LOG("[OTA][HTTP] rejected range status=%d\r\n",
                                  http_status);
-                    modem_http_set_last_error_status("range_status", http_status);
+                    const char *action_error = modem_http_action_error_name(http_status);
+                    if (action_error) modem_http_set_last_error(action_error);
+                    else modem_http_set_last_error_status("range_status", http_status);
                 }
 
                 uint8_t max_retries = range_open_ok ?
                                       HTTP_OTA_RANGE_STATUS_RETRIES :
                                       HTTP_OTA_RANGE_OPEN_RETRIES;
+                /* SIMCom 7xx results are modem transport/TLS failures, not
+                 * HTTP responses. Repeating an identical SSL-session setup
+                 * cannot fix the configuration and only delays the failure. */
+                if (range_open_ok && modem_http_action_error_name(http_status)) {
+                    max_retries = 0U;
+                }
 
                 if (active_window_retries < max_retries) {
                     active_window_retries++;
@@ -1909,6 +2176,8 @@ void GetIMEI(void)
             print("[MODEM] IMEI ready imei=%s\r\n", imei);
             at_rx_active = 0;
             (void)SIM800_SendATCommand2("", NULL, 300, false);
+            print("[MODEM] querying modem firmware revision\r\n");
+            (void)SIM800_SendATCommand2("AT+CGMR", NULL, 5000, true);
             return;
         }
     }
