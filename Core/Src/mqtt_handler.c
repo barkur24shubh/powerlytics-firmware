@@ -193,6 +193,48 @@ static void mqtt_ota_release_busy(void)
     s_ota_busy = 0U;
 }
 
+/* The A7670C shares a limited TLS/session pool between MQTT and HTTP. Keep
+ * MQTT as the normal transport, but release its live TLS session while OTA
+ * HTTPS is active. CMQTTSTOP is the final confirmation that the MQTT service
+ * (and its socket/TLS session) has been torn down. */
+static uint8_t mqtt_stop_for_ota_http(void)
+{
+    (void)SIM800_SendATCommand2("AT+CMQTTDISC=0,120", "OK", 5000U, true);
+    osDelay(300U);
+    (void)SIM800_SendATCommand2("AT+CMQTTREL=0", "OK", 5000U, true);
+    osDelay(300U);
+
+    if (!SIM800_SendATCommand2("AT+CMQTTSTOP", "OK", 8000U, true)) {
+        print("[OTA][MQTT] failed to stop MQTT service before HTTPS\r\n");
+        return 0U;
+    }
+
+    osDelay(300U);
+    print("[OTA][MQTT] service stopped; HTTPS can use modem TLS resources\r\n");
+    return 1U;
+}
+
+static uint8_t mqtt_resume_after_ota_http(void)
+{
+    if (!MQTT_Connect(MQTT_HOST_URI,
+                      MQTT_PORT,
+                      MQTT_USERNAME,
+                      MQTT_PASSWORD)) {
+        print("[OTA][MQTT] reconnect failed after HTTPS download\r\n");
+        comm_manager_report_mqtt_disconnected();
+        return 0U;
+    }
+
+    if (!MQTT_Subscribe(NULL)) {
+        print("[OTA][MQTT] resubscribe failed after HTTPS download\r\n");
+        comm_manager_report_mqtt_disconnected();
+        return 0U;
+    }
+
+    print("[OTA][MQTT] reconnected and downlink subscription restored\r\n");
+    return 1U;
+}
+
 static void ota_download_progress(uint32_t downloaded,
                                   uint32_t total,
                                   void *ctx)
@@ -844,6 +886,17 @@ static uint8_t handle_ota_cjson(cJSON *root)
         return 1U;
     }
 
+    if (!mqtt_stop_for_ota_http()) {
+        (void)publish_ota_status_reported(deployment_id,
+                                          "OTA_DOWNLOAD_FAILED",
+                                          "DOWNLOAD",
+                                          1,
+                                          target_version,
+                                          "mqtt_tls_release_failed");
+        mqtt_ota_release_busy();
+        return 1U;
+    }
+
     uint32_t downloaded_size = 0U;
     char downloaded_sha256[65] = {0};
     ota_progress_ctx_t progress = {0U};
@@ -863,6 +916,20 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                                       ota_download_progress,
                                                       &progress);
     app_debug_led_set_ota_active(0U);
+
+    /* Restore MQTT before reporting any download/verification result. The
+     * normal runtime remains gated by s_ota_busy until the OTA path exits. */
+    if (!mqtt_resume_after_ota_http()) {
+        app_log_critical(APP_LOG_ERROR,
+                         "OTA",
+                         "MQTT_RESUME_FAILED",
+                         "MQTT did not resume after OTA HTTPS operation",
+                         download_ok,
+                         progress.last_percent,
+                         "MQTT_RECONNECT");
+        mqtt_ota_release_busy();
+        return 1U;
+    }
 
     if (!download_ok) {
         const char *fail_reason = modem_http_download_last_error();
