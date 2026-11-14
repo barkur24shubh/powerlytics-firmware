@@ -25,6 +25,14 @@ EOF
 echo "Building Powerlytics board ${POWERLYTICS_BOARD_SKU} (${POWERLYTICS_BOARD_MACRO})"
 
 make -C "${ROOT_DIR}/Bootloader" clean all
+
+# CubeIDE may add this analysis-only flag to generated make fragments. The
+# Ubuntu ARM GCC toolchain used in CI does not support it, so strip it there.
+if [[ "${CI:-}" == "true" ]]; then
+  find "${ROOT_DIR}/Debug" -type f \( -name '*.mk' -o -name 'makefile' \) \
+    -exec sed -i 's/-fcyclomatic-complexity//g' {} +
+fi
+
 make -C "${ROOT_DIR}/Debug" clean all
 
 "${ROOT_DIR}/scripts/package_current_artifacts.sh"
