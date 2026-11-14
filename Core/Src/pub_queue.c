@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include "main.h" // Needed for __disable_irq()
 
-static pub_item_t g_q[PUBQ_MAX];
+static pub_item_t g_q[PUBQ_MAX] __attribute__((section(".ccmram"), aligned(4)));
 static volatile uint8_t g_w = 0;
 static volatile uint8_t g_r = 0;
 

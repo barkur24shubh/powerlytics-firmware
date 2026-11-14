@@ -4,7 +4,7 @@
 #include "stm32f4xx_hal.h"
 
 #include "debug_uart.h"
-#include "mqtt_handler.h"
+#include "connectivity.h"
 #include "app_flash_log.h"
 #include "app_modbus_payload.h"
 
@@ -324,7 +324,7 @@ uint8_t app_log_flush_one(void)
      *
      * Important:
      * Sometimes cloud receives the log but firmware misses the +CMQTTPUB ACK.
-     * If we only pop on MQTT_Publish()==1, the same log is sent again and again.
+     * If we only pop on publish success, the same log is sent again and again.
      *
      * So for logs:
      * - attempt publish once
@@ -332,7 +332,7 @@ uint8_t app_log_flush_one(void)
      *
      * This prevents duplicate logs and prevents logs from starving telemetry.
      */
-    uint8_t ok = MQTT_Publish(topic_d2c_logs, json);
+    uint8_t ok = connectivity_publish(topic_d2c_logs, json);
 
     app_log_pop();
 

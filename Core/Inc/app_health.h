@@ -17,6 +17,7 @@ typedef struct {
 } app_signal_snapshot_t;
 
 void app_health_init(void);
+void app_health_set_boot_info(uint32_t boot_count, const char *boot_id, const char *reset_reason);
 void app_health_run_once(void);
 uint8_t app_health_publish_now(void);
 uint8_t app_health_signal_poll_due(void);

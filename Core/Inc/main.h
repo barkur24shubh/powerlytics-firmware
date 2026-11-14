@@ -28,6 +28,7 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32f4xx_hal.h"
+#include "board_profile.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -61,10 +62,10 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define Modbus_Tx_Pin GPIO_PIN_8
-#define Modbus_Tx_GPIO_Port GPIOD
-#define Modbus_Rx_Pin GPIO_PIN_9
-#define Modbus_Rx_GPIO_Port GPIOD
+#define Modbus_Tx_Pin BOARD_MODBUS_UART_TX_GPIO_PIN
+#define Modbus_Tx_GPIO_Port BOARD_MODBUS_UART_TX_GPIO_PORT
+#define Modbus_Rx_Pin BOARD_MODBUS_UART_RX_GPIO_PIN
+#define Modbus_Rx_GPIO_Port BOARD_MODBUS_UART_RX_GPIO_PORT
 #define UART2_TX_Pin GPIO_PIN_5
 #define UART2_TX_GPIO_Port GPIOD
 #define UART2_RX_Pin GPIO_PIN_6

@@ -1,4 +1,6 @@
 #include "debug_uart.h"
+#include "usb_device.h"
+#include "usbd_cdc_if.h"
 #include <string.h>
 #include <stdio.h>     // <-- needed for vsnprintf
 #include <stdarg.h>
@@ -7,6 +9,32 @@ static UART_HandleTypeDef *dbg_huart = NULL;
 static debug_uart_sink_t dbg_sink = NULL;
 static uint32_t dbg_force_enabled_until = 0U;
 static uint8_t dbg_at_trace_enabled = 0U;
+static volatile uint8_t dbg_usb_writing = 0U;
+
+static void debug_usb_write(const char *text, uint16_t length) {
+    if (!text || (length == 0U) ||
+        (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED)) {
+        return;
+    }
+
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    if (dbg_usb_writing) {
+        if (!primask) {
+            __enable_irq();
+        }
+        return;
+    }
+    dbg_usb_writing = 1U;
+    if (!primask) {
+        __enable_irq();
+    }
+
+    /* Debug output must never block a firmware task when USB is busy. */
+    (void)CDC_Transmit_FS((uint8_t *)text, length);
+
+    dbg_usb_writing = 0U;
+}
 
 #if defined(DEBUG)
 static uint8_t dbg_uart_enabled = 1U;
@@ -43,7 +71,8 @@ uint8_t debug_uart_at_is_enabled(void) {
 }
 
 void print(const char *fmt, ...) {
-    if (!dbg_huart && !dbg_sink) return;
+    if (!dbg_huart && !dbg_sink &&
+        (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED)) return;
     if (!fmt) return;
 
     char buf[1024];
@@ -56,6 +85,10 @@ void print(const char *fmt, ...) {
 
     if (dbg_huart && (dbg_uart_enabled || force_enabled)) {
         HAL_UART_Transmit(dbg_huart, (uint8_t*)buf, strlen(buf), 1000);
+    }
+
+    if (dbg_uart_enabled || force_enabled) {
+        debug_usb_write(buf, (uint16_t)strlen(buf));
     }
 
     if (dbg_sink) {

@@ -46,6 +46,15 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
 
+/*
+ * Keep the RTOS allocator out of normal SRAM. Boot runs on MSP before the
+ * scheduler starts, and large filesystem/debug call frames otherwise collide
+ * with a heap placed at the top of the 128 KB DMA-capable SRAM region.
+ * FreeRTOS objects and task stacks are CPU-only and are safe in CCM RAM.
+ */
+uint8_t ucHeap[configTOTAL_HEAP_SIZE]
+  __attribute__((section(".ccmram"), aligned(8)));
+
 /* USER CODE END Variables */
 
 /* Private function prototypes -----------------------------------------------*/

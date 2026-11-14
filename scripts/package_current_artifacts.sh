@@ -6,6 +6,9 @@ ARTIFACT_DIR="${ROOT_DIR}/artifacts"
 APP_BUILD_DIR="${ROOT_DIR}/Debug"
 BOOT_BUILD_DIR="${ROOT_DIR}/Bootloader/Debug"
 OBJCOPY="${OBJCOPY:-arm-none-eabi-objcopy}"
+BOARD_SLUG="${POWERLYTICS_BOARD_SLUG:-}"
+BOARD_SKU="${POWERLYTICS_BOARD_SKU:-}"
+FIRMWARE_VERSION="$(sed -n 's/^#define APP_FIRMWARE_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' "${ROOT_DIR}/Core/Inc/app_firmware.h" | head -n 1)"
 
 "${OBJCOPY}" -O binary \
   "${APP_BUILD_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.elf" \
@@ -55,5 +58,44 @@ cp "${ARTIFACT_DIR}/app/BALCKPILL_BASED_GENERIC_GATEWAY.map" "${ARTIFACT_DIR}/"
   cd "${ARTIFACT_DIR}"
   sha256sum BALCKPILL_BASED_GENERIC_GATEWAY.* > SHA256SUMS
 )
+
+if [[ -n "${BOARD_SLUG}" ]]; then
+  board_dir="${ARTIFACT_DIR}/boards/${BOARD_SLUG}"
+  board_name="powerlytics-${BOARD_SLUG}-${FIRMWARE_VERSION:-unknown}"
+
+  mkdir -p "${board_dir}"
+
+  cp "${APP_BUILD_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.bin" "${board_dir}/"
+  cp "${APP_BUILD_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.hex" "${board_dir}/"
+  cp "${APP_BUILD_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.elf" "${board_dir}/"
+  cp "${APP_BUILD_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.map" "${board_dir}/"
+
+  cp "${APP_BUILD_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.bin" "${board_dir}/${board_name}.bin"
+  cp "${APP_BUILD_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.hex" "${board_dir}/${board_name}.hex"
+  cp "${APP_BUILD_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.elf" "${board_dir}/${board_name}.elf"
+  cp "${APP_BUILD_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.map" "${board_dir}/${board_name}.map"
+
+  cp "${BOOT_BUILD_DIR}/powerlytics_bootloader.bin" "${board_dir}/powerlytics_bootloader.bin"
+  cp "${BOOT_BUILD_DIR}/powerlytics_bootloader.hex" "${board_dir}/powerlytics_bootloader.hex"
+  cp "${BOOT_BUILD_DIR}/powerlytics_bootloader.elf" "${board_dir}/powerlytics_bootloader.elf"
+  cp "${BOOT_BUILD_DIR}/powerlytics_bootloader.map" "${board_dir}/powerlytics_bootloader.map"
+
+  cat > "${board_dir}/manifest.json" <<EOF
+{
+  "type": "powerlytics_board_firmware_artifacts",
+  "boardSku": "${BOARD_SKU}",
+  "boardSlug": "${BOARD_SLUG}",
+  "firmwareVersion": "${FIRMWARE_VERSION:-unknown}",
+  "appBinary": "${board_name}.bin",
+  "legacyAppBinary": "BALCKPILL_BASED_GENERIC_GATEWAY.bin",
+  "bootloaderBinary": "powerlytics_bootloader.bin"
+}
+EOF
+
+  (
+    cd "${board_dir}"
+    sha256sum *.bin *.hex *.elf *.map manifest.json > SHA256SUMS
+  )
+fi
 
 echo "Packaged current build outputs into ${ARTIFACT_DIR}"

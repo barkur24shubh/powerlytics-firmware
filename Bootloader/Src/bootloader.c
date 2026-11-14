@@ -1,10 +1,19 @@
 #include "stm32f407xx.h"
 #include "sha256.h"
 #include "app_ota_manifest.h"
+#include "monocypher-ed25519.h"
+#include "ota_signature.h"
 
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
+#ifndef OTA_SIGNING_PUBLIC_KEY_HEX
+#define OTA_SIGNING_PUBLIC_KEY_HEX ""
+#endif
+#ifndef OTA_DEVICE_MODEL
+#define OTA_DEVICE_MODEL ""
+#endif
 
 #define BOOT_APP_ADDR          APP_OTA_APPLICATION_ADDR
 #define BOOT_FLASH_END_ADDR    APP_OTA_FLASH_END_ADDR
@@ -314,9 +323,15 @@ static uint8_t manifest_load(app_ota_manifest_t *m)
         m->image_addr != APP_OTA_STAGING_W25Q_ADDR ||
         m->app_addr != APP_OTA_APPLICATION_ADDR ||
         m->app_max_size != APP_OTA_APPLICATION_SIZE ||
-        m->install_result != APP_OTA_RESULT_NONE ||
         m->image_size == 0U ||
         m->image_size > APP_OTA_APPLICATION_SIZE) {
+        return 0U;
+    }
+
+    if (m->install_result != APP_OTA_RESULT_NONE &&
+        m->install_result != APP_OTA_RESULT_INSTALLED &&
+        m->install_result != APP_OTA_RESULT_FAILED &&
+        m->install_result != APP_OTA_RESULT_ROLLED_BACK) {
         return 0U;
     }
 
@@ -359,23 +374,6 @@ static uint8_t w25q_wait_ready(void)
     return 1U;
 }
 
-static uint8_t manifest_clear(void)
-{
-    uint32_t addr = APP_OTA_MANIFEST_W25Q_ADDR;
-
-    w25q_write_enable();
-    w25q_cs(0U);
-    if (!spi1_xfer(W25Q_CMD_SECTOR_ERASE, NULL) ||
-        !spi1_xfer((uint8_t)(addr >> 16U), NULL) ||
-        !spi1_xfer((uint8_t)(addr >> 8U), NULL) ||
-        !spi1_xfer((uint8_t)addr, NULL)) {
-        w25q_cs(1U);
-        return 0U;
-    }
-    w25q_cs(1U);
-    return w25q_wait_ready();
-}
-
 static uint8_t w25q_program_bytes(uint32_t addr, const uint8_t *data, uint32_t len)
 {
     if (!data || len == 0U || len > 256U || ((addr & 0xFFU) + len) > 256U) {
@@ -413,6 +411,59 @@ static uint8_t manifest_write_result(uint32_t result, uint32_t error)
     words[1] = error;
 
     return w25q_program_bytes(addr, (const uint8_t *)words, sizeof(words));
+}
+
+static uint8_t manifest_write_word(size_t field_offset, uint32_t value)
+{
+    uint32_t addr = APP_OTA_MANIFEST_W25Q_ADDR + (uint32_t)field_offset;
+    return w25q_program_bytes(addr, (const uint8_t *)&value, sizeof(value));
+}
+
+static uint8_t sha256_w25q(uint32_t addr, uint32_t len, uint8_t hash[32]);
+
+static uint8_t w25q_erase_4k(uint32_t addr)
+{
+    if ((addr & 0xFFFU) != 0U || addr >= APP_OTA_W25Q_TOTAL_SIZE) return 0U;
+    w25q_write_enable();
+    w25q_cs(0U);
+    if (!spi1_xfer(W25Q_CMD_SECTOR_ERASE, NULL) ||
+        !spi1_xfer((uint8_t)(addr >> 16U), NULL) ||
+        !spi1_xfer((uint8_t)(addr >> 8U), NULL) ||
+        !spi1_xfer((uint8_t)addr, NULL)) {
+        w25q_cs(1U);
+        return 0U;
+    }
+    w25q_cs(1U);
+    return w25q_wait_ready();
+}
+
+static uint8_t copy_internal_to_backup(const app_ota_manifest_t *m)
+{
+    uint32_t done = 0U;
+    uint8_t hash[32];
+    if (!m) return 0U;
+    for (uint32_t addr = APP_OTA_BACKUP_W25Q_ADDR;
+         addr < APP_OTA_BACKUP_W25Q_ADDR + APP_OTA_SLOT_SIZE;
+         addr += 4096U) {
+        iwdg_refresh();
+        if (!w25q_erase_4k(addr)) return 0U;
+    }
+    while (done < APP_OTA_SLOT_SIZE) {
+        uint32_t chunk = APP_OTA_SLOT_SIZE - done;
+        if (chunk > sizeof(s_buf)) chunk = sizeof(s_buf);
+        memcpy(s_buf, (const void *)(APP_OTA_APPLICATION_ADDR + done), chunk);
+        for (uint32_t offset = 0U; offset < chunk; offset += 256U) {
+            uint32_t page = chunk - offset;
+            if (page > 256U) page = 256U;
+            if (!w25q_program_bytes(APP_OTA_BACKUP_W25Q_ADDR + done + offset,
+                                    &s_buf[offset], page)) return 0U;
+        }
+        done += chunk;
+        iwdg_refresh();
+    }
+    if (!sha256_w25q(APP_OTA_BACKUP_W25Q_ADDR, APP_OTA_SLOT_SIZE, hash) ||
+        memcmp(hash, m->rollback_sha256, sizeof(hash)) != 0) return 0U;
+    return 1U;
 }
 
 static uint8_t sha256_w25q(uint32_t addr,
@@ -465,6 +516,39 @@ static uint8_t sha256_internal_flash(uint32_t addr,
 
     sha256_final(&sha, hash);
     return 1U;
+}
+
+static int8_t hex_nibble(char c)
+{
+    if (c >= '0' && c <= '9') return (int8_t)(c - '0');
+    if (c >= 'a' && c <= 'f') return (int8_t)(c - 'a' + 10);
+    if (c >= 'A' && c <= 'F') return (int8_t)(c - 'A' + 10);
+    return -1;
+}
+
+static uint8_t hex_to_bytes(const char *hex, uint8_t *out, uint32_t bytes)
+{
+    if (!hex || !out || strlen(hex) != bytes * 2U) return 0U;
+    for (uint32_t i = 0U; i < bytes; i++) {
+        int8_t hi = hex_nibble(hex[i * 2U]);
+        int8_t lo = hex_nibble(hex[i * 2U + 1U]);
+        if (hi < 0 || lo < 0) return 0U;
+        out[i] = (uint8_t)(((uint8_t)hi << 4U) | (uint8_t)lo);
+    }
+    return 1U;
+}
+
+static uint8_t manifest_signature_valid(const app_ota_manifest_t *m)
+{
+    uint8_t public_key[32];
+    char message[192];
+    size_t length = 0U;
+    if (!m || !hex_to_bytes(OTA_SIGNING_PUBLIC_KEY_HEX, public_key, sizeof(public_key))) return 0U;
+    if (!ota_signature_build_message(message, sizeof(message), &length,
+                                     OTA_DEVICE_MODEL, m->target_version,
+                                     m->image_size, m->sha256)) return 0U;
+    return (crypto_ed25519_check(m->signature_ed25519, public_key,
+                                 (const uint8_t *)message, length) == 0) ? 1U : 0U;
 }
 
 static uint8_t flash_wait_ready(void)
@@ -615,6 +699,42 @@ static uint8_t flash_install_from_w25q(const app_ota_manifest_t *m)
     return 1U;
 }
 
+static uint8_t flash_restore_backup(const app_ota_manifest_t *m)
+{
+    uint8_t hash[32];
+    uint32_t done = 0U;
+    if (!m || !sha256_w25q(APP_OTA_BACKUP_W25Q_ADDR, APP_OTA_SLOT_SIZE, hash) ||
+        memcmp(hash, m->rollback_sha256, sizeof(hash)) != 0) return 0U;
+
+    flash_unlock();
+    for (uint32_t sector = 2U; sector <= 7U; sector++) {
+        iwdg_refresh();
+        if (!flash_erase_sector(sector)) { flash_lock(); return 0U; }
+    }
+    while (done < APP_OTA_SLOT_SIZE) {
+        uint32_t chunk = APP_OTA_SLOT_SIZE - done;
+        if (chunk > sizeof(s_buf)) chunk = sizeof(s_buf);
+        iwdg_refresh();
+        if (!w25q_read(APP_OTA_BACKUP_W25Q_ADDR + done, s_buf, chunk)) {
+            flash_lock(); return 0U;
+        }
+        for (uint32_t i = 0U; i < chunk; i++) {
+            if (!flash_program_byte(APP_OTA_APPLICATION_ADDR + done + i, s_buf[i])) {
+                flash_lock(); return 0U;
+            }
+        }
+        done += chunk;
+    }
+    flash_lock();
+    return sha256_internal_flash(APP_OTA_APPLICATION_ADDR, APP_OTA_SLOT_SIZE, hash) &&
+           memcmp(hash, m->rollback_sha256, sizeof(hash)) == 0 ? 1U : 0U;
+}
+
+static uint32_t trial_attempt_count(uint32_t word)
+{
+    return (uint32_t)__builtin_popcount(~word);
+}
+
 void boot_main(void)
 {
     app_ota_manifest_t manifest;
@@ -627,38 +747,68 @@ void boot_main(void)
     w25q_init_gpio_spi();
 
     if (w25q_read_jedec() != 0U && manifest_load(&manifest)) {
-        boot_uart_puts("[BL] OTA manifest pending\r\n");
-        if (!sha256_w25q(manifest.image_addr,
-                         manifest.image_size,
-                         staged_hash) ||
-            memcmp(staged_hash, manifest.sha256, sizeof(staged_hash)) != 0) {
-            boot_uart_puts("[BL][ERR] staged hash mismatch\r\n");
-            if (!manifest_write_result(APP_OTA_RESULT_FAILED, APP_OTA_ERR_STAGED_HASH)) {
-                (void)manifest_clear();
-            }
-        } else if (flash_install_from_w25q(&manifest)) {
-            if (sha256_internal_flash(manifest.app_addr,
-                                      manifest.image_size,
-                                      flash_hash) &&
-                memcmp(flash_hash, manifest.sha256, sizeof(flash_hash)) == 0 &&
-                app_is_valid(BOOT_APP_ADDR)) {
-                boot_uart_puts("[BL] OTA installed\r\n");
-                if (!manifest_write_result(APP_OTA_RESULT_INSTALLED, APP_OTA_ERR_NONE)) {
-                    (void)manifest_clear();
+        if (manifest.install_result == APP_OTA_RESULT_INSTALLED) {
+            if (manifest.rollback_requested == APP_OTA_ROLLBACK_REQUESTED) {
+                boot_uart_puts("[BL] manual rollback requested\r\n");
+                if (!manifest.backup_valid || !flash_restore_backup(&manifest) ||
+                    !app_is_valid(BOOT_APP_ADDR) ||
+                    !manifest_write_result(APP_OTA_RESULT_ROLLED_BACK, APP_OTA_ERR_MANUAL_ROLLBACK)) {
+                    boot_uart_puts("[BL][ERR] manual rollback failed\r\n");
+                    led_error_loop();
                 }
-                boot_uart_puts("[BL] reset to new app\r\n");
-                delay_cycles(300000UL);
-                NVIC_SystemReset();
+            } else if (manifest.trial_confirmed == APP_OTA_TRIAL_CONFIRMED) {
+                boot_uart_puts("[BL] confirmed image retained\r\n");
             } else {
-                boot_uart_puts("[BL][ERR] flash verify failed\r\n");
-                if (!manifest_write_result(APP_OTA_RESULT_FAILED, APP_OTA_ERR_FLASH_VERIFY)) {
-                    (void)manifest_clear();
+                uint32_t attempts = trial_attempt_count(manifest.trial_attempts);
+                if (attempts >= APP_OTA_MAX_TRIAL_BOOTS) {
+                    boot_uart_puts("[BL] trial failed; restoring backup\r\n");
+                    if (!manifest.backup_valid || !flash_restore_backup(&manifest) ||
+                        !app_is_valid(BOOT_APP_ADDR) ||
+                        !manifest_write_result(APP_OTA_RESULT_ROLLED_BACK, APP_OTA_ERR_TRIAL_EXHAUSTED)) {
+                        boot_uart_puts("[BL][ERR] automatic rollback failed\r\n");
+                        led_error_loop();
+                    }
+                } else {
+                    uint32_t attempts_word = manifest.trial_attempts & ~(1UL << attempts);
+                    if (!manifest_write_word(offsetof(app_ota_manifest_t, trial_attempts), attempts_word)) {
+                        boot_uart_puts("[BL][ERR] cannot record trial boot\r\n");
+                        led_error_loop();
+                    }
                 }
             }
-        } else {
-            boot_uart_puts("[BL][ERR] flash program failed\r\n");
-            if (!manifest_write_result(APP_OTA_RESULT_FAILED, APP_OTA_ERR_FLASH_PROGRAM)) {
-                (void)manifest_clear();
+        } else if (manifest.install_result == APP_OTA_RESULT_NONE) {
+            boot_uart_puts("[BL] OTA install pending\r\n");
+            if (!sha256_w25q(manifest.image_addr, manifest.image_size, staged_hash) ||
+                memcmp(staged_hash, manifest.sha256, sizeof(staged_hash)) != 0) {
+                boot_uart_puts("[BL][ERR] staged hash mismatch\r\n");
+                (void)manifest_write_result(APP_OTA_RESULT_FAILED, APP_OTA_ERR_STAGED_HASH);
+            } else if (!manifest_signature_valid(&manifest)) {
+                boot_uart_puts("[BL][ERR] Ed25519 signature verification failed\r\n");
+                (void)manifest_write_result(APP_OTA_RESULT_FAILED, APP_OTA_ERR_SIGNATURE_INVALID);
+            } else {
+                if (manifest.backup_valid != APP_OTA_BACKUP_VALID) {
+                    if (!copy_internal_to_backup(&manifest) ||
+                        !manifest_write_word(offsetof(app_ota_manifest_t, backup_valid), APP_OTA_BACKUP_VALID)) {
+                        boot_uart_puts("[BL][ERR] original image backup failed\r\n");
+                        (void)manifest_write_result(APP_OTA_RESULT_FAILED, APP_OTA_ERR_BACKUP);
+                    } else {
+                        manifest.backup_valid = APP_OTA_BACKUP_VALID;
+                    }
+                }
+                if (manifest.backup_valid == APP_OTA_BACKUP_VALID) {
+                    if (flash_install_from_w25q(&manifest) &&
+                        sha256_internal_flash(manifest.app_addr, manifest.image_size, flash_hash) &&
+                        memcmp(flash_hash, manifest.sha256, sizeof(flash_hash)) == 0 &&
+                        app_is_valid(BOOT_APP_ADDR)) {
+                        boot_uart_puts("[BL] OTA installed; starting trial\r\n");
+                        if (!manifest_write_result(APP_OTA_RESULT_INSTALLED, APP_OTA_ERR_NONE)) led_error_loop();
+                        NVIC_SystemReset();
+                    } else {
+                        boot_uart_puts("[BL][ERR] install/verify failed; restoring\r\n");
+                        if (!flash_restore_backup(&manifest) || !app_is_valid(BOOT_APP_ADDR)) led_error_loop();
+                        (void)manifest_write_result(APP_OTA_RESULT_FAILED, APP_OTA_ERR_FLASH_VERIFY);
+                    }
+                }
             }
         }
     }

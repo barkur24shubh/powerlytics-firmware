@@ -31,6 +31,8 @@
 #include "app_firmware.h"
 #include "comm_manager.h"
 #include "app_ota_manifest.h"
+#include "app_watchdog.h"
+#include "rtc_manager.h"
 
 /* ===== Externals ===== */
 extern uart2_rx_t g_u2rx;
@@ -40,6 +42,7 @@ extern char topic_c2d_commands[64];
 extern char topic_d2c_message[64];
 extern char topic_d2c_logs[64];
 extern char topic_d2c_health[64];
+extern char topic_d2c_event[64];
 extern uint8_t pump_state;
 
 uint32_t lastMQTTSuccessTime = 0;
@@ -58,7 +61,12 @@ static uint8_t s_consecutive_mqtt_subscribe_fail = 0;
 uint8_t SIM800_SendATCommand2(const char *command, const char *expected, uint32_t timeout, bool flush_rx);
 uint8_t SendCommandWithRetry(const char *cmd, const char *expected, uint16_t timeout, uint8_t retries);
 
-#define MQTT_MAX_PAYLOAD (1024U * 4U)
+#define MQTT_MAX_PAYLOAD (1024U * 8U)
+#define CONFIG_HASH_HEX_LEN                  64U
+#define MQTT_RX_MIN_PAYLOAD_TIMEOUT_MS       30000UL
+#define MQTT_RX_TIMEOUT_PER_BYTE_MS          5UL
+#define MQTT_RX_MAX_PAYLOAD_TIMEOUT_MS       60000UL
+#define MQTT_RX_END_TIMEOUT_MS               5000UL
 
 #define MQTT_CONNECT_CMD_OK_TIMEOUT_MS      30000UL
 #define MQTT_CONNECT_URC_TIMEOUT_MS         45000UL
@@ -71,8 +79,8 @@ uint8_t SendCommandWithRetry(const char *cmd, const char *expected, uint16_t tim
 #define MQTT_PUBLISH_URC_TIMEOUT_MS         30000UL
 
 #define OTA_STAGING_BASE_ADDR               APP_OTA_STAGING_W25Q_ADDR
-#define OTA_STAGING_MAX_SIZE                (W25Q_TOTAL_SIZE - OTA_STAGING_BASE_ADDR)
-#define OTA_MAX_ARTIFACT_URL_LEN            240U
+#define OTA_STAGING_MAX_SIZE                APP_OTA_SLOT_SIZE
+#define OTA_MAX_ARTIFACT_URL_LEN            2000U
 #define OTA_SERIAL_DEBUG_PRINT              0U
 
 #define OTA_LOG(...) do { if (OTA_SERIAL_DEBUG_PRINT) { print(__VA_ARGS__); } } while (0)
@@ -82,6 +90,84 @@ static uint8_t s_last_publish_attempted = 1U;
 static W25Q_Handle *s_ota_flash = NULL;
 static volatile uint8_t s_ota_busy = 0U;
 static uint8_t s_ota_boot_result_seen_empty = 0U;
+static uint8_t s_ota_installed_ack_sent = 0U;
+static uint32_t s_ota_trial_started_tick = 0U;
+static char s_ota_rollback_version[32] = {0};
+#define OTA_TRIAL_CONFIRM_DELAY_MS 300000UL
+static char s_mqtt_rx_payload[MQTT_MAX_PAYLOAD] __attribute__((section(".ccmram"), aligned(4)));
+
+static uint8_t config_hash_is_valid_hex(const char *hash)
+{
+    if (!hash || strlen(hash) != CONFIG_HASH_HEX_LEN) {
+        return 0U;
+    }
+
+    for (size_t i = 0U; i < CONFIG_HASH_HEX_LEN; i++) {
+        const char c = hash[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+            return 0U;
+        }
+    }
+
+    return 1U;
+}
+
+static uint8_t config_json_span(const char *json,
+                                const uint8_t **config_start,
+                                size_t *config_len)
+{
+    if (!json || !config_start || !config_len) return 0U;
+
+    const char *key = json;
+    const char *p = NULL;
+    do {
+        key = strstr(key, "\"config\"");
+        if (!key) return 0U;
+        p = key + strlen("\"config\"");
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+        key++;
+    } while (*p != ':');
+
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p != '{') return 0U;
+
+    const char *start = p;
+    uint32_t depth = 0U;
+    uint8_t in_string = 0U;
+    uint8_t escaped = 0U;
+
+    for (; *p; p++) {
+        const char c = *p;
+
+        if (in_string) {
+            if (escaped) {
+                escaped = 0U;
+            } else if (c == '\\') {
+                escaped = 1U;
+            } else if (c == '"') {
+                in_string = 0U;
+            }
+            continue;
+        }
+
+        if (c == '"') {
+            in_string = 1U;
+        } else if (c == '{') {
+            depth++;
+        } else if (c == '}') {
+            if (depth == 0U) return 0U;
+            depth--;
+            if (depth == 0U) {
+                *config_start = (const uint8_t *)start;
+                *config_len = (size_t)(p - start + 1);
+                return 1U;
+            }
+        }
+    }
+
+    return 0U;
+}
 
 typedef struct {
     uint8_t last_percent;
@@ -141,9 +227,9 @@ static uint8_t ota_url_is_supported(const char *url, const char **reason)
         return 0U;
     }
 
-    if (strncmp(url, "http://", 7U) != 0) {
+    if (strncmp(url, "https://", 8U) != 0) {
         if (reason) {
-            *reason = "only_http_public_bucket_url_supported";
+            *reason = "https_required";
         }
         return 0U;
     }
@@ -152,21 +238,25 @@ static uint8_t ota_url_is_supported(const char *url, const char **reason)
 }
 
 static void publish_config_status(const char *config_id,
+                                  const char *deployment_id,
                                   const char *status,
                                   const char *type)
 {
     char message[256];
     const char *safe_id = (config_id && config_id[0]) ? config_id : "unknown";
+    const char *safe_deployment = (deployment_id && deployment_id[0]) ? deployment_id : "unknown";
 
     if (type && type[0]) {
         snprintf(message, sizeof(message),
-                 "{\"status\":\"%s\",\"configId\":\"%s\",\"type\":\"%s\"}",
+                 "{\"status\":\"%s\",\"deploymentId\":\"%s\",\"configId\":\"%s\",\"type\":\"%s\"}",
                  status,
+                 safe_deployment,
                  safe_id,
                  type);
     } else {
         snprintf(message, sizeof(message),
-                 "{\"type\":\"deployment_ack\",\"configId\":\"%s\",\"status\":\"%s\"}",
+                 "{\"type\":\"deployment_ack\",\"deploymentId\":\"%s\",\"configId\":\"%s\",\"status\":\"%s\"}",
+                 safe_deployment,
                  safe_id,
                  status);
     }
@@ -236,6 +326,18 @@ static uint8_t ota_hex_to_bytes_32(const char *hex, uint8_t out[32])
     return 1U;
 }
 
+static uint8_t ota_hex_to_bytes_64(const char *hex, uint8_t out[64])
+{
+    if (!hex || !out || strlen(hex) != 128U) return 0U;
+    for (uint32_t i = 0U; i < 64U; i++) {
+        int8_t hi = ota_hex_nibble(hex[i * 2U]);
+        int8_t lo = ota_hex_nibble(hex[i * 2U + 1U]);
+        if (hi < 0 || lo < 0) return 0U;
+        out[i] = (uint8_t)(((uint8_t)hi << 4U) | (uint8_t)lo);
+    }
+    return 1U;
+}
+
 static void ota_copy_manifest_string(char *dst, uint32_t dst_len, const char *src)
 {
     if (!dst || dst_len == 0U) {
@@ -253,6 +355,7 @@ static void ota_copy_manifest_string(char *dst, uint32_t dst_len, const char *sr
 
 static uint8_t ota_write_pending_manifest(uint32_t image_size,
                                           const char *sha256_hex,
+                                          const char *signature_hex,
                                           const char *deployment_id,
                                           const char *target_version)
 {
@@ -274,10 +377,15 @@ static uint8_t ota_write_pending_manifest(uint32_t image_size,
     manifest.app_max_size = APP_OTA_APPLICATION_SIZE;
     manifest.install_result = APP_OTA_RESULT_NONE;
     manifest.install_error = APP_OTA_ERR_UNSET;
+    manifest.backup_valid = 0xFFFFFFFFUL;
+    manifest.trial_attempts = 0xFFFFFFFFUL;
+    manifest.trial_confirmed = 0xFFFFFFFFUL;
+    manifest.rollback_requested = 0xFFFFFFFFUL;
 
     if (!ota_hex_to_bytes_32(sha256_hex, manifest.sha256)) {
         return 0U;
     }
+    if (!ota_hex_to_bytes_64(signature_hex, manifest.signature_ed25519)) return 0U;
 
     ota_copy_manifest_string(manifest.deployment_id,
                              sizeof(manifest.deployment_id),
@@ -285,6 +393,20 @@ static uint8_t ota_write_pending_manifest(uint32_t image_size,
     ota_copy_manifest_string(manifest.target_version,
                              sizeof(manifest.target_version),
                              target_version);
+    ota_copy_manifest_string(manifest.rollback_version,
+                             sizeof(manifest.rollback_version),
+                             APP_FIRMWARE_VERSION);
+
+    sha256_ctx_t rollback_sha;
+    sha256_init(&rollback_sha);
+    for (uint32_t offset = 0U; offset < APP_OTA_SLOT_SIZE; offset += 512U) {
+        uint32_t chunk = APP_OTA_SLOT_SIZE - offset;
+        if (chunk > 512U) chunk = 512U;
+        sha256_update(&rollback_sha,
+                      (const uint8_t *)(APP_OTA_APPLICATION_ADDR + offset),
+                      chunk);
+    }
+    sha256_final(&rollback_sha, manifest.rollback_sha256);
 
     manifest.crc32 = ota_crc32_sw(&manifest, APP_OTA_MANIFEST_CRC_LEN);
 
@@ -348,6 +470,14 @@ static uint8_t ota_clear_manifest(void)
     return w25q_erase_sector_4k(s_ota_flash, APP_OTA_MANIFEST_W25Q_ADDR);
 }
 
+static uint8_t ota_write_manifest_marker(size_t field_offset, uint32_t value)
+{
+    return s_ota_flash && w25q_write(s_ota_flash,
+                                     APP_OTA_MANIFEST_W25Q_ADDR + (uint32_t)field_offset,
+                                     (const uint8_t *)&value,
+                                     sizeof(value));
+}
+
 static const char *ota_boot_error_reason(uint32_t err)
 {
     switch (err) {
@@ -359,6 +489,14 @@ static const char *ota_boot_error_reason(uint32_t err)
         return "bootloader_flash_program_failed";
     case APP_OTA_ERR_FLASH_VERIFY:
         return "bootloader_flash_verify_failed";
+    case APP_OTA_ERR_BACKUP:
+        return "bootloader_previous_image_backup_failed";
+    case APP_OTA_ERR_TRIAL_EXHAUSTED:
+        return "trial_boot_limit_reached_previous_image_restored";
+    case APP_OTA_ERR_MANUAL_ROLLBACK:
+        return "manual_rollback_previous_image_restored";
+    case APP_OTA_ERR_SIGNATURE_INVALID:
+        return "bootloader_ed25519_signature_invalid";
     default:
         return "bootloader_unknown_result";
     }
@@ -438,6 +576,7 @@ static uint8_t publish_ota_status(const char *deployment_id,
              "\"stage\":\"%s\","
              "\"progress\":%d,"
              "\"currentVersion\":\"%s\","
+             "\"rollbackVersion\":\"%s\","
              "\"targetVersion\":\"%s\","
              "\"deviceModel\":\"%s\","
              "\"reason\":\"%s\""
@@ -447,6 +586,7 @@ static uint8_t publish_ota_status(const char *deployment_id,
              safe_stage,
              progress,
              APP_FIRMWARE_VERSION,
+             s_ota_rollback_version[0] ? s_ota_rollback_version : APP_FIRMWARE_VERSION,
              safe_target,
              APP_DEVICE_MODEL,
              safe_reason);
@@ -475,8 +615,6 @@ static uint8_t publish_ota_status_reported(const char *deployment_id,
 uint8_t MQTT_ReportOtaBootResultOnce(void)
 {
     app_ota_manifest_t manifest;
-    const char *status;
-    const char *reason;
     uint8_t ok;
 
     if (s_ota_boot_result_seen_empty) {
@@ -493,30 +631,71 @@ uint8_t MQTT_ReportOtaBootResultOnce(void)
     }
 
     if (manifest.install_result == APP_OTA_RESULT_INSTALLED) {
-        status = "OTA_INSTALLED";
-        reason = "bootloader_install_ok";
-    } else if (manifest.install_result == APP_OTA_RESULT_FAILED) {
-        status = "OTA_INSTALL_FAILED";
-        reason = ota_boot_error_reason(manifest.install_error);
-    } else {
-        status = "OTA_INSTALL_FAILED";
-        reason = "bootloader_unknown_result";
+        ota_copy_manifest_string(s_ota_rollback_version, sizeof(s_ota_rollback_version), manifest.rollback_version);
+        if (!s_ota_installed_ack_sent) {
+            ok = publish_ota_status((const char *)manifest.deployment_id,
+                                    "OTA_INSTALLED", "BOOT", 100,
+                                    (const char *)manifest.target_version,
+                                    "bootloader_install_ok_trial_started");
+            comm_manager_report_publish_result(ok);
+            if (!ok) return 0U;
+            s_ota_installed_ack_sent = 1U;
+            s_ota_trial_started_tick = HAL_GetTick();
+        }
+        if (manifest.trial_confirmed != APP_OTA_TRIAL_CONFIRMED) {
+            if ((uint32_t)(HAL_GetTick() - s_ota_trial_started_tick) < OTA_TRIAL_CONFIRM_DELAY_MS) return 0U;
+            if (!ota_write_manifest_marker(offsetof(app_ota_manifest_t, trial_confirmed), APP_OTA_TRIAL_CONFIRMED)) return 0U;
+        }
+        ok = publish_ota_status((const char *)manifest.deployment_id,
+                                "OTA_CONFIRMED", "HEALTH_CHECK", 100,
+                                (const char *)manifest.target_version,
+                                "five_minute_trial_passed");
+        comm_manager_report_publish_result(ok);
+        if (ok) s_ota_boot_result_seen_empty = 1U;
+        return ok;
     }
 
-    ok = publish_ota_status((const char *)manifest.deployment_id,
-                            status,
-                            "BOOT",
-                            100,
-                            (const char *)manifest.target_version,
-                            reason);
-    comm_manager_report_publish_result(ok);
-
-    if (ok) {
-        (void)ota_clear_manifest();
-        s_ota_boot_result_seen_empty = 1U;
+    if (manifest.install_result == APP_OTA_RESULT_FAILED ||
+        manifest.install_result == APP_OTA_RESULT_ROLLED_BACK) {
+        ota_copy_manifest_string(s_ota_rollback_version, sizeof(s_ota_rollback_version), manifest.rollback_version);
+        const uint8_t rolled_back = manifest.install_result == APP_OTA_RESULT_ROLLED_BACK;
+        ok = publish_ota_status((const char *)manifest.deployment_id,
+                                rolled_back ? "OTA_ROLLED_BACK" : "OTA_INSTALL_FAILED",
+                                "BOOT", 100,
+                                (const char *)manifest.target_version,
+                                ota_boot_error_reason(manifest.install_error));
+        comm_manager_report_publish_result(ok);
+        if (ok) {
+            (void)ota_clear_manifest();
+            s_ota_boot_result_seen_empty = 1U;
+        }
+        return ok;
     }
 
-    return ok;
+    return 0U;
+}
+
+static uint8_t handle_ota_rollback_cjson(cJSON *root)
+{
+    const char *deployment_id = json_str_or_empty(root, "deploymentId");
+    app_ota_manifest_t manifest;
+    if (!deployment_id[0] || !ota_read_manifest(&manifest) ||
+        strcmp(deployment_id, manifest.deployment_id) != 0 ||
+        manifest.install_result != APP_OTA_RESULT_INSTALLED ||
+        manifest.backup_valid != APP_OTA_BACKUP_VALID ||
+        manifest.trial_confirmed != APP_OTA_TRIAL_CONFIRMED ||
+        strcmp(json_str_or_empty(root, "targetVersion"), manifest.rollback_version) != 0) {
+        if (deployment_id[0]) {
+            (void)publish_ota_status_reported(deployment_id, "OTA_REJECTED", "ROLLBACK", 0,
+                                               json_str_or_empty(root, "targetVersion"),
+                                               "rollback_backup_or_deployment_unavailable");
+        }
+        return 0U;
+    }
+    if (!ota_write_manifest_marker(offsetof(app_ota_manifest_t, rollback_requested),
+                                   APP_OTA_ROLLBACK_REQUESTED)) return 0U;
+    NVIC_SystemReset();
+    return 1U;
 }
 
 static uint8_t handle_ota_cjson(cJSON *root)
@@ -526,6 +705,8 @@ static uint8_t handle_ota_cjson(cJSON *root)
     const char *device_model = json_str_or_empty(root, "deviceModel");
     const char *artifact_url = json_str_or_empty(root, "artifactUrl");
     const char *sha256 = json_str_or_empty(root, "sha256");
+    const char *signature = json_str_or_empty(root, "signatureEd25519");
+    uint8_t signature_bytes[64];
     int size = json_int_or(root, "size", 0);
 
     if (target_version[0] == '\0') {
@@ -540,6 +721,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
     if (sha256[0] == '\0') {
         sha256 = json_str_or_empty(root, "checksumSha256");
     }
+    if (signature[0] == '\0') signature = json_str_or_empty(root, "signature");
     if (size <= 0) {
         size = json_int_or(root, "sizeBytes", 0);
     }
@@ -577,13 +759,20 @@ static uint8_t handle_ota_cjson(cJSON *root)
         device_model[0] == '\0' ||
         artifact_url[0] == '\0' ||
         sha256[0] == '\0' ||
+        signature[0] == '\0' ||
         size <= 0) {
         (void)publish_ota_status_reported(deployment_id,
                                           "OTA_REJECTED",
                                           "VALIDATE",
                                           0,
                                           target_version,
-                                          "missing_required_field");
+                                          signature[0] == '\0' ? "missing_ed25519_signature" : "missing_required_field");
+        return 1U;
+    }
+
+    if (strlen(signature) != 128U || !ota_hex_to_bytes_64(signature, signature_bytes)) {
+        (void)publish_ota_status_reported(deployment_id, "OTA_REJECTED", "VALIDATE", 0,
+                                          target_version, "invalid_ed25519_signature_format");
         return 1U;
     }
 
@@ -644,16 +833,19 @@ static uint8_t handle_ota_cjson(cJSON *root)
 
     s_ota_busy = 1U;
     app_debug_led_set_ota_active(1U);
-    uint8_t download_ok = modem_tcp_http_download_to_w25q(artifact_url,
-                                                          s_ota_flash,
-                                                          OTA_STAGING_BASE_ADDR,
-                                                          OTA_STAGING_MAX_SIZE,
-                                                          (uint32_t)size,
-                                                          sha256,
-                                                          &downloaded_size,
-                                                          downloaded_sha256,
-                                                          ota_download_progress,
-                                                          &progress);
+    /* Use the modem HTTP(S) client so HTTPS requests follow the configured
+     * SSL context. The older manual TCP path always opened port 80 and would
+     * silently bypass TLS even when the URL looked secure. */
+    uint8_t download_ok = modem_http_download_to_w25q(artifact_url,
+                                                      s_ota_flash,
+                                                      OTA_STAGING_BASE_ADDR,
+                                                      OTA_STAGING_MAX_SIZE,
+                                                      (uint32_t)size,
+                                                      sha256,
+                                                      &downloaded_size,
+                                                      downloaded_sha256,
+                                                      ota_download_progress,
+                                                      &progress);
     app_debug_led_set_ota_active(0U);
     s_ota_busy = 0U;
 
@@ -693,6 +885,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
 
     if (!ota_write_pending_manifest(downloaded_size,
                                     downloaded_sha256,
+                                    signature,
                                     deployment_id,
                                     target_version)) {
         (void)publish_ota_status_reported(deployment_id,
@@ -789,6 +982,7 @@ static const char *mqtt_topic_kind(const char *topic)
     if (strcmp(topic, topic_d2c_telemetry) == 0) return "telemetry";
     if (strcmp(topic, topic_d2c_logs) == 0) return "log";
     if (strcmp(topic, topic_d2c_health) == 0) return "health";
+    if (strcmp(topic, topic_d2c_event) == 0) return "event";
     if (strcmp(topic, topic_d2c_message) == 0) return "message";
     if (strcmp(topic, topic_c2d_commands) == 0) return "command";
     return "custom";
@@ -799,26 +993,32 @@ static const char *mqtt_topic_kind(const char *topic)
    ========================================================= */
 void Prepare_MQTT_Topics(void)
 {
-    /*
-     * Use actual modem IMEI as device ID.
-     * Fallback is only for safety if IMEI is not available yet.
-     */
-    const char *device_id = (imei[0] != '\0') ? imei : "unknown_device";
+    /* Use the modem-reported IMEI; a fixed topic identity can route this
+     * physical unit's traffic to another registered device. */
+    if (!imei[0])
+    {
+        print("[MQTT] topics not prepared: modem IMEI unavailable\r\n");
+        return;
+    }
+    const char *device_id = imei;
 
     snprintf(topic_d2c_telemetry, sizeof(topic_d2c_telemetry),
-             "d2c/%s/telemetry", device_id);
+             "d2c/%s/telemetry_test", device_id);
 
     snprintf(topic_c2d_commands, sizeof(topic_c2d_commands),
-             "c2d/%s/commands", device_id);
+             "c2d/%s/commands_test", device_id);
 
     snprintf(topic_d2c_message, sizeof(topic_d2c_message),
-             "d2c/%s/message", device_id);
+             "d2c/%s/message_test", device_id);
 
     snprintf(topic_d2c_logs, sizeof(topic_d2c_logs),
-             "d2c/%s/logs", device_id);
+             "d2c/%s/logs_test", device_id);
 
     snprintf(topic_d2c_health, sizeof(topic_d2c_health),
-             "d2c/%s/health", device_id);
+             "d2c/%s/health_test", device_id);
+
+    snprintf(topic_d2c_event, sizeof(topic_d2c_event),
+             "d2c/%s/event_test", device_id);
 
     print("[MQTT] topics ready imei=%s commandTopic=%s\r\n",
           device_id,
@@ -1052,7 +1252,7 @@ fail:
 static uint32_t s_last_mqtt_publish_attempt_tick = 0;
 static uint32_t s_mqtt_publish_block_until_tick = 0;
 
-uint8_t MQTT_Publish(const char *topic, const char *payload)
+static uint8_t mqtt_publish_impl(const char *topic, const char *payload, uint8_t enforce_min_gap)
 {
     if (!topic || !topic[0] || !payload) return 0;
 
@@ -1077,8 +1277,11 @@ uint8_t MQTT_Publish(const char *topic, const char *payload)
      * SIMCom MQTT engine becomes unstable in weak network if hammered.
      */
     uint32_t elapsed = now - s_last_mqtt_publish_attempt_tick;
-    if (elapsed < MQTT_PUBLISH_MIN_GAP_MS) {
+    if (enforce_min_gap && elapsed < MQTT_PUBLISH_MIN_GAP_MS) {
         osDelay(MQTT_PUBLISH_MIN_GAP_MS - elapsed);
+    } else if (!enforce_min_gap && elapsed < MQTT_PUBLISH_MIN_GAP_MS) {
+        print("[MQTT PUB] priority publish bypassed min gap elapsed=%lu ms\r\n",
+              (unsigned long)elapsed);
     }
 
     s_last_mqtt_publish_attempt_tick = HAL_GetTick();
@@ -1140,6 +1343,7 @@ uint8_t MQTT_Publish(const char *topic, const char *payload)
 
     lastMQTTSuccessTime = HAL_GetTick();
     s_last_publish_stage = "OK";
+    app_debug_led_event(DEBUG_LED_EVENT_UPLINK);
     return 1;
 
 fail:
@@ -1151,6 +1355,16 @@ fail:
           fail_stage);
     mqtt_log_diag("publish", fail_stage);
     return 0;
+}
+
+uint8_t MQTT_Publish(const char *topic, const char *payload)
+{
+    return mqtt_publish_impl(topic, payload, 1U);
+}
+
+uint8_t MQTT_PublishPriority(const char *topic, const char *payload)
+{
+    return mqtt_publish_impl(topic, payload, 0U);
 }
 
 uint8_t MQTT_LastPublishAttempted(void)
@@ -1272,9 +1486,17 @@ static int u2_read_exact(uint8_t *dst, int want, uint32_t timeout_ms)
     uint32_t t0 = HAL_GetTick();
     int got = 0;
     while (got < want && (HAL_GetTick() - t0) < timeout_ms) {
+        app_watchdog_mark_task(APP_WATCHDOG_TASK_RUNTIME);
+        app_debug_led_run_once();
+        app_watchdog_refresh();
+
         size_t avail = u2rx_available(&g_u2rx);
         if (avail == 0) {
-            (void)osSemaphoreAcquire(g_u2rx.rxSem, 50);
+            if (g_u2rx.rxSem) {
+                (void)osSemaphoreAcquire(g_u2rx.rxSem, 100);
+            } else {
+                osDelay(1);
+            }
             continue;
         }
         size_t take = avail;
@@ -1286,7 +1508,7 @@ static int u2_read_exact(uint8_t *dst, int want, uint32_t timeout_ms)
 
 char* MQTT_Subscriber_Run(void)
 {
-    static char payload[MQTT_MAX_PAYLOAD];
+    char *payload = s_mqtt_rx_payload;
 
     // 1. Wait for the header (don't clear buffer yet)
     if (!u2rx_wait_for(&g_u2rx, "+CMQTTRXPAYLOAD:", 100)) return NULL;
@@ -1308,15 +1530,24 @@ char* MQTT_Subscriber_Run(void)
         return NULL;
     }
 
+    uint32_t payload_timeout_ms = MQTT_RX_MIN_PAYLOAD_TIMEOUT_MS +
+                                  ((uint32_t)reported_len * MQTT_RX_TIMEOUT_PER_BYTE_MS);
+    if (payload_timeout_ms > MQTT_RX_MAX_PAYLOAD_TIMEOUT_MS) {
+        payload_timeout_ms = MQTT_RX_MAX_PAYLOAD_TIMEOUT_MS;
+    }
+
     // 4. Read the EXACT number of bytes.
     // Do NOT use read_line here. Newlines in JSON will break it.
-    int got = u2_read_exact((uint8_t*)payload, reported_len, 10000);
+    int got = u2_read_exact((uint8_t*)payload, reported_len, payload_timeout_ms);
     payload[got] = 0; // Manual null termination
 
     // 5. Check for footer
-    (void)u2rx_wait_for(&g_u2rx, "+CMQTTRXEND", 500);
+    (void)u2rx_wait_for(&g_u2rx, "+CMQTTRXEND", MQTT_RX_END_TIMEOUT_MS);
 
-    print("[MQTT RX] downlink payload read len=%d expected=%d\r\n", got, reported_len);
+    print("[MQTT RX] downlink payload read len=%d expected=%d timeout=%lu\r\n",
+          got,
+          reported_len,
+          (unsigned long)payload_timeout_ms);
     if (got != reported_len) {
         print("[MQTT RX][ERR] incomplete payload discarded\r\n");
         return NULL;
@@ -1326,9 +1557,10 @@ char* MQTT_Subscriber_Run(void)
 }
 
 static void publish_actuation_ack(const char *actuation_id,
-                                  const char *status)
+                                  const char *status,
+                                  const char *reason)
 {
-    char ack[192];
+    char ack[256];
 
     if (!actuation_id || actuation_id[0] == '\0') {
         actuation_id = "unknown";
@@ -1338,14 +1570,11 @@ static void publish_actuation_ack(const char *actuation_id,
         status = "FAILED";
     }
 
-    snprintf(ack, sizeof(ack),
-             "{"
-             "\"type\":\"actuation_ack\","
-             "\"actuationId\":\"%s\","
-             "\"status\":\"%s\""
-             "}",
-             actuation_id,
-             status);
+    if (reason && reason[0]) {
+        snprintf(ack, sizeof(ack), "{\"type\":\"actuation_ack\",\"actuationId\":\"%s\",\"status\":\"%s\",\"reason\":\"%s\"}", actuation_id, status, reason);
+    } else {
+        snprintf(ack, sizeof(ack), "{\"type\":\"actuation_ack\",\"actuationId\":\"%s\",\"status\":\"%s\"}", actuation_id, status);
+    }
 
     print("[ACT] acknowledgement sending actuationId=%s status=%s payloadLen=%lu\r\n",
           actuation_id,
@@ -1353,6 +1582,51 @@ static void publish_actuation_ack(const char *actuation_id,
           (unsigned long)strlen(ack));
 
     MQTT_Publish(topic_d2c_message, ack);
+}
+
+static int64_t actuation_days_from_civil(int year, unsigned month, unsigned day)
+{
+    year -= month <= 2U;
+    const int era = (year >= 0 ? year : year - 399) / 400;
+    const unsigned yoe = (unsigned)(year - era * 400);
+    const unsigned doy = (153U * (month + (month > 2U ? (unsigned)-3 : 9U)) + 2U) / 5U + day - 1U;
+    const unsigned doe = yoe * 365U + yoe / 4U - yoe / 100U + doy;
+    return (int64_t)era * 146097 + (int64_t)doe - 719468;
+}
+
+static uint8_t actuation_parse_expiry(const char *text, int64_t *epoch_out)
+{
+    int y, mo, d, h, mi, sec;
+    int consumed = 0;
+    if (!text || !epoch_out || sscanf(text, "%4d-%2d-%2dT%2d:%2d:%2d%n", &y, &mo, &d, &h, &mi, &sec, &consumed) != 6) return 0U;
+    if (y < 2000 || y > 2099 || mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || sec > 59) return 0U;
+    const char *tz = text + consumed;
+    if (*tz == '.') { tz++; while (*tz >= '0' && *tz <= '9') tz++; }
+    int offset = 0;
+    if (*tz == 'Z' && tz[1] == '\0') {
+        offset = 0;
+    } else if ((*tz == '+' || *tz == '-') && strlen(tz) == 6U && tz[3] == ':') {
+        int oh = (tz[1] - '0') * 10 + tz[2] - '0';
+        int om = (tz[4] - '0') * 10 + tz[5] - '0';
+        if (oh > 23 || om > 59) return 0U;
+        offset = (oh * 60 + om) * (*tz == '+' ? 1 : -1);
+    } else return 0U;
+    *epoch_out = actuation_days_from_civil(y, (unsigned)mo, (unsigned)d) * 86400 + h * 3600 + mi * 60 + sec - offset * 60;
+    return 1U;
+}
+
+static uint8_t actuation_expiry_status(cJSON *root, const char **status, const char **reason)
+{
+    cJSON *expires = cJSON_GetObjectItemCaseSensitive(root, "expiresAt");
+    if (!expires) return 1U; /* Legacy commands without expiry remain supported. */
+    if (!cJSON_IsString(expires) || !expires->valuestring) { *status = "FAILED"; *reason = "invalid_expiry"; return 0U; }
+    int64_t expiry_epoch;
+    rtc_datetime_t current;
+    if (!actuation_parse_expiry(expires->valuestring, &expiry_epoch)) { *status = "FAILED"; *reason = "invalid_expiry"; return 0U; }
+    if (!rtc_is_datetime_valid() || !rtc_get_datetime(&current)) { *status = "FAILED"; *reason = "device_clock_invalid"; return 0U; }
+    int64_t now = actuation_days_from_civil(current.year, current.month, current.day) * 86400 + current.hour * 3600 + current.minute * 60 + current.second - (5 * 3600 + 30 * 60);
+    if (now >= expiry_epoch) { *status = "EXPIRED"; *reason = "command_expired"; return 0U; }
+    return 1U;
 }
 
 static uint8_t handle_actuation_cjson(cJSON *root)
@@ -1367,7 +1641,14 @@ static uint8_t handle_actuation_cjson(cJSON *root)
 
     if (!port_str || !action_str) {
         print("[ACT][ERR] missing portKey/action\r\n");
-        publish_actuation_ack(id_str, "FAILED");
+        publish_actuation_ack(id_str, "FAILED", "missing_port_or_action");
+        return 1U;
+    }
+
+    const char *expiry_status = "FAILED";
+    const char *expiry_reason = "";
+    if (!actuation_expiry_status(root, &expiry_status, &expiry_reason)) {
+        publish_actuation_ack(id_str, expiry_status, expiry_reason);
         return 1U;
     }
 
@@ -1394,11 +1675,11 @@ static uint8_t handle_actuation_cjson(cJSON *root)
 
     if (ok)
     {
-        publish_actuation_ack(id_str, "ACKED");
+        publish_actuation_ack(id_str, "ACKED", NULL);
     }
     else
     {
-        publish_actuation_ack(id_str, "FAILED");
+        publish_actuation_ack(id_str, "FAILED", "relay_action_failed");
     }
 
     return 1U;
@@ -1407,6 +1688,16 @@ static uint8_t handle_actuation_cjson(cJSON *root)
 void handle_downlink_cjson(const char *payload_str)
 {
     if (!payload_str || !payload_str[0]) return;
+
+    const uint8_t *hash_input = NULL;
+    size_t hash_input_len = 0U;
+    char hash_calc[CONFIG_HASH_HEX_LEN + 1U] = {0};
+    uint8_t hash_input_ok = config_json_span(payload_str,
+                                             &hash_input,
+                                             &hash_input_len);
+    if (hash_input_ok) {
+        sha256_hex(hash_input, hash_input_len, hash_calc);
+    }
 
     app_log_push(APP_LOG_INFO,
                  "DOWNLINK",
@@ -1417,7 +1708,21 @@ void handle_downlink_cjson(const char *payload_str)
 
     cJSON *root = cJSON_Parse(payload_str);
     if (!root) {
-        print("[CONFIG][ERR] downlink JSON parse failed\r\n");
+        const char *error_ptr = cJSON_GetErrorPtr();
+        size_t payload_len = strlen(payload_str);
+        size_t error_offset = error_ptr && error_ptr >= payload_str ?
+                              (size_t)(error_ptr - payload_str) : payload_len;
+        size_t dump_start = (error_offset > 8U) ? (error_offset - 8U) : 0U;
+        size_t dump_end = error_offset + 8U;
+        if (dump_end > payload_len) dump_end = payload_len;
+
+        print("[CONFIG][ERR] downlink JSON parse failed strlen=%lu offset=%lu bytes=",
+              (unsigned long)payload_len,
+              (unsigned long)error_offset);
+        for (size_t i = dump_start; i < dump_end; i++) {
+            print("%02X", (unsigned int)(uint8_t)payload_str[i]);
+        }
+        print("\r\n");
 
         app_log_push(APP_LOG_ERROR,
                      "CONFIG",
@@ -1426,7 +1731,7 @@ void handle_downlink_cjson(const char *payload_str)
                      0,
                      0);
 
-        publish_config_status("unknown", "error", "invalid_json_format");
+        publish_config_status("unknown", "unknown", "error", "invalid_json_format");
         return;
     }
 
@@ -1444,6 +1749,10 @@ void handle_downlink_cjson(const char *payload_str)
         json_type_equals(type_str, "firmware_update"))
     {
         handle_ota_cjson(root);
+        cJSON_Delete(root);
+        return;
+    } else if (json_type_equals(type_str, "ota_rollback")) {
+        (void)handle_ota_rollback_cjson(root);
         cJSON_Delete(root);
         return;
     }
@@ -1466,20 +1775,12 @@ void handle_downlink_cjson(const char *payload_str)
     cJSON *cfgId = cJSON_GetObjectItem(root, "configId");
     cJSON *cfg   = cJSON_GetObjectItem(root, "config");
 
-    /*
-     * New config has hash inside config.
-     * Older config may have hash at root.
-     *
-     * Support both:
-     *   root.hash
-     *   root.config.hash
-     */
+    /* The digest belongs to the envelope and covers only the inner config. */
     cJSON *hash = cJSON_GetObjectItem(root, "hash");
-    if (!cJSON_IsString(hash) && cJSON_IsObject(cfg)) {
-        hash = cJSON_GetObjectItem(cfg, "hash");
-    }
 
     const char *id_str = (cJSON_IsString(cfgId)) ? cfgId->valuestring : "missing";
+    const char *deployment_str = cJSON_IsObject(cfg) ?
+                                 json_str_or_empty(cfg, "deploymentId") : "";
 
     if (strcmp(id_str, "missing") == 0) {
         app_log_push(APP_LOG_ERROR,
@@ -1489,7 +1790,7 @@ void handle_downlink_cjson(const char *payload_str)
                      0,
                      0);
 
-        publish_config_status("missing", "error", "missing_configId");
+        publish_config_status("missing", deployment_str, "error", "missing_configId");
         cJSON_Delete(root);
         return;
     }
@@ -1502,7 +1803,23 @@ void handle_downlink_cjson(const char *payload_str)
                      0,
                      0);
 
-        publish_config_status(id_str, "error", "missing_config_object");
+        publish_config_status(id_str, deployment_str, "error", "missing_config_object");
+        cJSON_Delete(root);
+        return;
+    }
+
+    if (cJSON_GetObjectItemCaseSensitive(cfg, "modbusSlaves") != NULL) {
+        app_log_push(APP_LOG_ERROR,
+                     "CONFIG",
+                     "LEGACY_MODBUS_SCHEMA",
+                     "top-level modbusSlaves is not supported",
+                     0,
+                     0);
+
+        publish_config_status(id_str,
+                              deployment_str,
+                              "error",
+                              "legacy_modbusSlaves_not_supported");
         cJSON_Delete(root);
         return;
     }
@@ -1515,95 +1832,62 @@ void handle_downlink_cjson(const char *payload_str)
                      0,
                      0);
 
-        publish_config_status(id_str, "error", "missing_hash");
+        publish_config_status(id_str, deployment_str, "error", "missing_hash");
         cJSON_Delete(root);
         return;
     }
 
-    /*
-     * For hash calculation:
-     * If hash is inside config, do NOT calculate hash over config including hash.
-     */
-    cJSON *hash_base_cfg = cJSON_Duplicate(cfg, 1);
-    if (!hash_base_cfg) {
+    if (!config_hash_is_valid_hex(hash->valuestring)) {
         app_log_push(APP_LOG_ERROR,
                      "CONFIG",
-                     "MEMORY_ERROR",
-                     "failed to duplicate config for hash",
+                     "INVALID_HASH",
+                     "config hash must be 64 lowercase hex characters",
                      0,
                      0);
 
-        publish_config_status(id_str, "error", "memory_allocation_error");
+        publish_config_status(id_str, deployment_str, "error", "invalid_hash_format");
         cJSON_Delete(root);
         return;
     }
 
-    cJSON_DeleteItemFromObject(hash_base_cfg, "hash");
-
-    char *hash_base_min = cJSON_PrintUnformatted(hash_base_cfg);
-    cJSON_Delete(hash_base_cfg);
-
-    if (!hash_base_min) {
+    if (!hash_input_ok) {
         app_log_push(APP_LOG_ERROR,
                      "CONFIG",
-                     "MEMORY_ERROR",
-                     "failed to print hash base config",
+                     "HASH_INPUT_TOO_LARGE",
+                     "config bytes could not be isolated for hash validation",
                      0,
                      0);
 
-        publish_config_status(id_str, "error", "memory_allocation_error");
+        publish_config_status(id_str, deployment_str, "error", "config_hash_input_invalid");
         cJSON_Delete(root);
         return;
     }
 
-    char hash_calc[65] = {0};
-    sha256_hex((const uint8_t *)hash_base_min,
-               strlen(hash_base_min),
-               hash_calc);
+    print("[CONFIG][HASH] innerLen=%lu expected=%s calculated=%s\r\n",
+          (unsigned long)hash_input_len,
+          hash->valuestring,
+          hash_calc);
 
-    print("[CONFIG] hash calculated len=%lu validation=disabled\r\n",
-          (unsigned long)strlen(hash_calc));
-
-    /*
-     * Hash check is currently disabled in your file.
-     * Re-enable this once backend hash generation is stable.
-     */
-//    if (strcmp(hash->valuestring, hash_calc) != 0) {
-//        app_log_push(APP_LOG_ERROR,
-//                     "CONFIG",
-//                     "HASH_MISMATCH",
-//                     "config hash mismatch",
-//                     0,
-//                     0);
-//
-//        snprintf(message, sizeof(message),
-//                 "{\"status\":\"error\",\"configId\":\"%s\",\"type\":\"hash_mismatch\"}",
-//                 id_str);
-//        MQTT_Publish(topic_d2c_message, message);
-//        cJSON_free(hash_base_min);
-//        cJSON_Delete(root);
-//        return;
-//    }
-
-    char *cfg_min = cJSON_PrintUnformatted(cfg);
-    if (!cfg_min) {
+    if (strcmp(hash->valuestring, hash_calc) != 0) {
+        print("[CONFIG][HASH][ERR] mismatch\r\n");
         app_log_push(APP_LOG_ERROR,
                      "CONFIG",
-                     "MEMORY_ERROR",
-                     "failed to print config JSON",
+                     "HASH_MISMATCH",
+                     "config hash mismatch",
                      0,
                      0);
 
-        publish_config_status(id_str, "error", "memory_allocation_error");
-        cJSON_free(hash_base_min);
+        publish_config_status(id_str, deployment_str, "error", "hash_mismatch");
         cJSON_Delete(root);
         return;
     }
 
-    modbus_cfg_t new_cfg;
-    memset(&new_cfg, 0, sizeof(new_cfg));
+    print("[CONFIG] hash verified\r\n");
 
-    if (!modbus_cfg_from_json(cfg_min, &new_cfg)) {
+    modbus_cfg_t *work_cfg = modbus_cfg_workspace();
+    memset(work_cfg, 0, sizeof(*work_cfg));
+
+    if (!modbus_cfg_from_cjson(cfg, work_cfg)) {
         app_log_push(APP_LOG_ERROR,
                      "CONFIG",
                      "PARSE_FAILED",
@@ -1611,18 +1895,21 @@ void handle_downlink_cjson(const char *payload_str)
                      0,
                      0);
 
-        publish_config_status(id_str, "error", "parse_to_struct_failed");
+        publish_config_status(id_str, deployment_str, "error", "parse_to_struct_failed");
 
-        cJSON_free(hash_base_min);
-        cJSON_free(cfg_min);
         cJSON_Delete(root);
         return;
     }
 
-    print("[CONFIG] parsed telemetryInterval=%lu s\r\n",
-          (unsigned long)new_cfg.telemetry_interval_s);
+    strncpy(work_cfg->hash, hash->valuestring, sizeof(work_cfg->hash) - 1U);
+    work_cfg->hash[sizeof(work_cfg->hash) - 1U] = '\0';
 
-    if (!modbus_cfg_save(&new_cfg)) {
+    print("[CONFIG] parsed telemetryInterval=%lu ms sampleInterval=%lu ms points=%u\r\n",
+          (unsigned long)work_cfg->telemetry_interval_ms,
+          (unsigned long)work_cfg->sample_interval_ms,
+          work_cfg->point_count);
+
+    if (!modbus_cfg_save(work_cfg)) {
         app_log_push(APP_LOG_ERROR,
                      "CONFIG",
                      "FLASH_SAVE_FAILED",
@@ -1630,18 +1917,15 @@ void handle_downlink_cjson(const char *payload_str)
                      0,
                      0);
 
-        publish_config_status(id_str, "error", "flash_write_error");
+        publish_config_status(id_str, deployment_str, "error", "flash_write_error");
 
-        cJSON_free(hash_base_min);
-        cJSON_free(cfg_min);
         cJSON_Delete(root);
         return;
     }
 
-    modbus_cfg_t saved_cfg;
-    memset(&saved_cfg, 0, sizeof(saved_cfg));
+    memset(work_cfg, 0, sizeof(*work_cfg));
 
-    if (!modbus_cfg_load(&saved_cfg)) {
+    if (!modbus_cfg_load(work_cfg)) {
         app_log_push(APP_LOG_ERROR,
                      "CONFIG",
                      "FLASH_RELOAD_FAILED",
@@ -1649,15 +1933,13 @@ void handle_downlink_cjson(const char *payload_str)
                      0,
                      0);
 
-        publish_config_status(id_str, "error", "flash_reload_error");
+        publish_config_status(id_str, deployment_str, "error", "flash_reload_error");
 
-        cJSON_free(hash_base_min);
-        cJSON_free(cfg_min);
         cJSON_Delete(root);
         return;
     }
 
-    if (strcmp(saved_cfg.config_id, id_str) != 0) {
+    if (strcmp(work_cfg->config_id, id_str) != 0) {
         app_log_push(APP_LOG_ERROR,
                      "CONFIG",
                      "FLASH_VERIFY_FAILED",
@@ -1665,10 +1947,8 @@ void handle_downlink_cjson(const char *payload_str)
                      0,
                      0);
 
-        publish_config_status(id_str, "error", "flash_verify_error");
+        publish_config_status(id_str, deployment_str, "error", "flash_verify_error");
 
-        cJSON_free(hash_base_min);
-        cJSON_free(cfg_min);
         cJSON_Delete(root);
         return;
     }
@@ -1678,8 +1958,8 @@ void handle_downlink_cjson(const char *payload_str)
      * the device is running the durable config, not just the received payload.
      */
     app_debug_led_event(DEBUG_LED_EVENT_DOWNLINK);
-    app_modbus_payload_set_cfg(&saved_cfg);
-    debug_uart_set_enabled(modbus_cfg_debug_print_enabled(&saved_cfg));
+    app_modbus_payload_set_cfg(work_cfg);
+    debug_uart_set_enabled(modbus_cfg_debug_print_enabled(work_cfg));
 
     if (!app_modbus_payload_has_valid_config() ||
         strcmp(app_modbus_payload_get_config_id(), id_str) != 0) {
@@ -1690,10 +1970,8 @@ void handle_downlink_cjson(const char *payload_str)
                      0,
                      0);
 
-        publish_config_status(id_str, "error", "apply_verify_error");
+        publish_config_status(id_str, deployment_str, "error", "apply_verify_error");
 
-        cJSON_free(hash_base_min);
-        cJSON_free(cfg_min);
         cJSON_Delete(root);
         return;
     }
@@ -1708,10 +1986,8 @@ void handle_downlink_cjson(const char *payload_str)
                  0,
                  0);
 
-    publish_config_status(id_str, "APPLIED", NULL);
+    publish_config_status(id_str, deployment_str, "APPLIED", NULL);
 
-    cJSON_free(hash_base_min);
-    cJSON_free(cfg_min);
     cJSON_Delete(root);
 
     osDelay(2000);

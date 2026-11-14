@@ -3,24 +3,30 @@
 #include "cmsis_os.h"
 #include "stm32f4xx_hal.h"
 
-#include "comm_manager.h"
-#include "mqtt_handler.h"
-#include "modem_handler.h"
+#include "connectivity.h"
 #include "app_log.h"
 #include "debug_uart.h"
 #include "app_firmware.h"
+#include "app_board_io.h"
+#include "app_gateway_platform.h"
+#include "app_powerlytics_engine.h"
+#include "rtc_manager.h"
+#include "board_profile.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #define HEALTH_PUBLISH_INTERVAL_MS   20000UL
 #define SIGNAL_SAMPLE_INTERVAL_MS    60000UL
-#define HEALTH_JSON_LEN              768U
+#define HEALTH_JSON_LEN              1280U
 
 extern char imei[20];
 extern char topic_d2c_health[64];
 
 static uint32_t s_last_health_publish_tick = 0;
+static uint32_t s_boot_count = 0U;
+static char s_boot_id[48] = "unknown";
+static char s_reset_reason[40] = "UNKNOWN";
 static uint32_t s_last_signal_sample_tick = 0;
 static app_signal_snapshot_t s_signal = {
     .valid = 0U,
@@ -69,6 +75,13 @@ static const char *signal_quality_from_rssi(int32_t rssi)
     return "excellent";
 }
 
+void app_health_set_boot_info(uint32_t boot_count, const char *boot_id, const char *reset_reason)
+{
+    s_boot_count = boot_count;
+    snprintf(s_boot_id, sizeof(s_boot_id), "%s", (boot_id && boot_id[0]) ? boot_id : "unknown");
+    snprintf(s_reset_reason, sizeof(s_reset_reason), "%s", (reset_reason && reset_reason[0]) ? reset_reason : "UNKNOWN");
+}
+
 void app_health_init(void)
 {
     s_last_health_publish_tick = 0;
@@ -105,7 +118,7 @@ uint8_t app_health_signal_poll_due(void)
     int32_t rssi = 99;
     int32_t ber = 99;
 
-    if (!modem_get_signal_quality(&rssi, &ber)) {
+    if (!connectivity_poll_signal_quality(&rssi, &ber)) {
         return 0U;
     }
 
@@ -149,7 +162,7 @@ uint8_t app_health_publish_now(void)
 {
     char json[HEALTH_JSON_LEN];
 
-    const comm_health_t *h = comm_manager_get_health();
+    const connectivity_health_t *h = connectivity_get_health();
 
     uint32_t now = HAL_GetTick();
 
@@ -163,12 +176,21 @@ uint8_t app_health_publish_now(void)
     app_signal_snapshot_t sig;
     (void)app_health_get_signal_snapshot(&sig);
 
+    uint16_t power_raw = 0U;
+    uint32_t power_sense_mv = 0U;
+    uint32_t supply_mv = 0U;
+    const uint8_t power_valid = app_power_monitor_get(&power_raw,
+                                                       &power_sense_mv,
+                                                       &supply_mv);
+
     snprintf(json, sizeof(json),
              "{"
              "\"type\":\"health\","
              "\"uptimeMs\":%lu,"
              "\"imei\":\"%s\","
+             "\"bootId\":\"%s\",\"bootCount\":%lu,\"resetReason\":\"%s\","
              "\"fw\":{\"version\":\"%s\",\"build\":\"%s\",\"model\":\"%s\"},"
+             "\"config\":{\"configId\":\"%s\",\"hash\":\"%s\"},"
              "\"commState\":\"%s\","
              "\"lastError\":\"%s\","
              "\"mqttOnline\":%s,"
@@ -180,6 +202,12 @@ uint8_t app_health_publish_now(void)
                 "\"dbm\":%ld,"
                 "\"quality\":\"%s\","
                 "\"ageMs\":%lu"
+             "},"
+             "\"power\":{"
+                "\"valid\":%s,"
+                "\"raw\":%u,"
+                "\"senseMv\":%lu,"
+                "\"supplyMv\":%lu"
              "},"
              "\"counters\":{"
                 "\"atFail\":%lu,"
@@ -199,12 +227,17 @@ uint8_t app_health_publish_now(void)
              "}",
              (unsigned long)now,
              imei,
+             s_boot_id,
+             (unsigned long)s_boot_count,
+             s_reset_reason,
              APP_FIRMWARE_VERSION,
              APP_FIRMWARE_BUILD,
              APP_DEVICE_MODEL,
-             comm_manager_state_name(comm_manager_get_state()),
-             comm_manager_error_name(comm_manager_get_last_error()),
-             comm_manager_is_online() ? "true" : "false",
+             app_powerlytics_engine_get_config_id(),
+             app_powerlytics_engine_get_config_hash(),
+             connectivity_state_name(connectivity_get_state()),
+             connectivity_error_name(connectivity_get_last_error()),
+             connectivity_is_online() ? "true" : "false",
              (unsigned long)last_pub_ago_ms,
              sig.valid ? "true" : "false",
              (long)sig.rssi,
@@ -212,6 +245,10 @@ uint8_t app_health_publish_now(void)
              (long)sig.dbm,
              sig.quality ? sig.quality : "unknown",
              (unsigned long)sig.ageMs,
+             power_valid ? "true" : "false",
+             (unsigned int)power_raw,
+             (unsigned long)power_sense_mv,
+             (unsigned long)supply_mv,
              (unsigned long)h->at_fail_count,
              (unsigned long)h->sim_not_ready_count,
              (unsigned long)h->network_reg_fail_count,
@@ -224,10 +261,14 @@ uint8_t app_health_publish_now(void)
              (unsigned int)app_log_count(),
              (unsigned long)app_log_dropped_count());
 
-    if (MQTT_Publish(topic_d2c_health, json)) {
+    if (connectivity_publish(topic_d2c_health, json)) {
         s_last_health_publish_tick = now;
 
-        print("[HEALTH] published\r\n");
+        print("[HEALTH] published powerValid=%u raw=%u sense=%lu mV supply=%lu mV\r\n",
+              power_valid,
+              (unsigned int)power_raw,
+              (unsigned long)power_sense_mv,
+              (unsigned long)supply_mv);
         return 1U;
     }
 

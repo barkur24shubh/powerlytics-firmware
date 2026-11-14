@@ -136,7 +136,7 @@ static void modem_print_text_or_summary(const char *prefix, const char *text)
 #define HTTP_OTA_RANGE_STATUS_RETRIES 8U
 #define HTTP_OTA_RANGE_READ_RETRIES   4U
 #define HTTP_OTA_RANGE_WINDOW  32768U
-#define HTTP_OTA_USE_RANGE_WINDOWS    0U
+#define HTTP_OTA_USE_RANGE_WINDOWS    1U
 #define HTTP_OTA_ACTION_MS     120000UL
 #define HTTP_OTA_READ_MS       30000UL
 #define HTTP_OTA_TAIL_WAIT_MS  80UL
@@ -390,6 +390,13 @@ static uint8_t modem_http_start_request_locked(const char *url,
     if (!strncmp(url, "https://", 8U)) {
         if (!modem_http_send_wait_ok_locked("AT+HTTPSSL=1", NULL, 5000U)) {
             HTTP_OTA_LOG("[OTA][HTTP] HTTPSSL enable failed/unsupported\r\n");
+            return 0U;
+        }
+        /* A76XX/A7670 HTTP(S) binds requests to an SSL context separately
+         * from the global HTTPSSL switch. Context 0 must be provisioned with
+         * a trusted CA and server verification enabled for production. */
+        if (!modem_http_send_wait_ok_locked("AT+HTTPPARA=\"SSLCFG\",0", NULL, 5000U)) {
+            HTTP_OTA_LOG("[OTA][HTTP] SSL context selection failed\r\n");
             return 0U;
         }
     }
@@ -1772,6 +1779,9 @@ uint8_t SIM800_SendATCommand2(const char *cmd,
     AT_TRACE_LOG("[AT] TIMEOUT after %lu ms\r\n", (unsigned long)timeout_ms);
     AT_TRACE_TEXT("[AT] Cmd=", cmd);
     AT_TRACE_LOG("[AT] expected_seen=%d\r\n", expected_seen);
+    AT_TRACE_LOG("[AT] rx_available=%lu uart_error=0x%08lX\r\n",
+                 (unsigned long)u2rx_available(&g_u2rx),
+                 (unsigned long)HAL_UART_GetError(g_u2rx.huart));
     AT_TRACE_LOG("================ AT END (TIMEOUT) =============\r\n");
 
     at_rx_active = 0;

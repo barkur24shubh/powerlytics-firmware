@@ -16,6 +16,7 @@
 #define APP_WATCHDOG_MODBUS_TIMEOUT_MS  15000UL
 #define APP_WATCHDOG_LED_TIMEOUT_MS     15000UL
 #define APP_WATCHDOG_DIAG_INTERVAL_MS   5000UL
+#define APP_WATCHDOG_STALE_MAGIC        0x57444753UL
 
 #ifndef APP_WATCHDOG_FREEZE_IN_DEBUG
 #define APP_WATCHDOG_FREEZE_IN_DEBUG 0U
@@ -25,6 +26,34 @@ static volatile uint8_t s_watchdog_ready = 0U;
 static volatile uint32_t s_registered_tasks = 0U;
 static volatile uint32_t s_task_last_seen[APP_WATCHDOG_TASK_COUNT] = {0};
 static uint32_t s_last_blocked_diag_tick = 0U;
+
+static const char *app_watchdog_task_name(app_watchdog_task_t task);
+
+static void app_watchdog_store_stale_task(app_watchdog_task_t task, uint32_t age_ms)
+{
+    uint32_t packed_age = (age_ms > 0x00FFFFFFUL) ? 0x00FFFFFFUL : age_ms;
+
+    __HAL_RCC_PWR_CLK_ENABLE();
+    HAL_PWR_EnableBkUpAccess();
+    RTC->BKP16R = APP_WATCHDOG_STALE_MAGIC;
+    RTC->BKP17R = ((packed_age & 0x00FFFFFFUL) << 8) | ((uint32_t)task & 0xFFUL);
+}
+
+static void app_watchdog_print_previous_stale_task(void)
+{
+    __HAL_RCC_PWR_CLK_ENABLE();
+    HAL_PWR_EnableBkUpAccess();
+
+    if (RTC->BKP16R == APP_WATCHDOG_STALE_MAGIC) {
+        uint32_t packed = RTC->BKP17R;
+        app_watchdog_task_t task = (app_watchdog_task_t)(packed & 0xFFUL);
+        uint32_t age_ms = (packed >> 8) & 0x00FFFFFFUL;
+
+        print("[IWDG][PREVIOUS] stale task=%s age=%lu ms\r\n",
+              app_watchdog_task_name(task),
+              (unsigned long)age_ms);
+    }
+}
 
 static uint32_t app_watchdog_task_bit(app_watchdog_task_t task)
 {
@@ -94,6 +123,8 @@ static uint8_t app_watchdog_tasks_healthy(void)
         }
 
         if ((now - last_seen) > timeout_ms) {
+            app_watchdog_store_stale_task((app_watchdog_task_t)task,
+                                          now - last_seen);
             if ((now - s_last_blocked_diag_tick) >= APP_WATCHDOG_DIAG_INTERVAL_MS) {
                 s_last_blocked_diag_tick = now;
                 print("[IWDG] refresh blocked: task=%s stale age=%lu timeout=%lu\r\n",
@@ -134,6 +165,7 @@ void app_watchdog_start(void)
 
     IWDG->KR = IWDG_KEY_START;
     s_watchdog_ready = 1U;
+    app_watchdog_print_previous_stale_task();
     app_watchdog_refresh();
 }
 

@@ -20,6 +20,19 @@
 
 static inline uint32_t rb_mask(uint32_t x) { return x % U2_RING_SZ; }
 
+static void u2rx_ring_write(uart2_rx_t *u2, const uint8_t *src, uint32_t count)
+{
+    uint32_t start = rb_mask(u2->wr);
+    uint32_t first = U2_RING_SZ - start;
+    if (first > count) first = count;
+
+    memcpy(&u2->ring[start], src, first);
+    if (first < count) {
+        memcpy(&u2->ring[0], src + first, count - first);
+    }
+    u2->wr += count;
+}
+
 void u2rx_init(uart2_rx_t *u2, UART_HandleTypeDef *huart, osSemaphoreId_t sem)
 {
     memset(u2, 0, sizeof(*u2));
@@ -43,7 +56,7 @@ HAL_StatusTypeDef u2rx_start(uart2_rx_t *u2)
 
 void u2rx_on_idle_event(uart2_rx_t *u2, uint16_t size)
 {
-    if (!u2 || size == 0) return; // Removed redundant rearm here
+    if (!u2 || size == 0U || size > U2_DMA_RX_SZ) return;
 
 
 #if U2RX_DEBUG
@@ -64,20 +77,35 @@ void u2rx_on_idle_event(uart2_rx_t *u2, uint16_t size)
     }
 #endif
 
-/* Copy DMA chunk into ring */
-    for (uint16_t i = 0; i < size; i++) {
-        u2->ring[rb_mask(u2->wr)] = u2->dma_buf[i];
-        u2->wr++;
+    uint16_t pos = (size == U2_DMA_RX_SZ) ? 0U : size;
+    uint16_t last = u2->dma_pos;
+    uint32_t count = 0U;
 
-        if ((u2->wr - u2->rd) > (U2_RING_SZ - 16)) {
-            u2->rd = u2->wr - (U2_RING_SZ / 2);
+    if (pos > last) {
+        count = (uint32_t)(pos - last);
+    } else if (pos < last) {
+        count = (uint32_t)(U2_DMA_RX_SZ - last) + pos;
+    } else if (size == U2_DMA_RX_SZ) {
+        count = U2_DMA_RX_SZ;
+    }
+
+    if (count > 0U) {
+        uint32_t first = U2_DMA_RX_SZ - last;
+        if (first > count) first = count;
+        u2rx_ring_write(u2, &u2->dma_buf[last], first);
+        if (first < count) {
+            u2rx_ring_write(u2, &u2->dma_buf[0], count - first);
         }
+    }
+    u2->dma_pos = pos;
+
+    if ((u2->wr - u2->rd) > (U2_RING_SZ - 16U)) {
+        u2->rd = u2->wr - (U2_RING_SZ / 2U);
     }
 
     if (u2->rxSem) {
         osSemaphoreRelease(u2->rxSem);
     }
-    // REMOVED: HAL_UARTEx_ReceiveToIdle_DMA call from here
 }
 
 size_t u2rx_available(uart2_rx_t *u2)
