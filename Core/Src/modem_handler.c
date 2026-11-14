@@ -8,6 +8,7 @@
 #include "app_log.h"
 #include "app_watchdog.h"
 #include "sha256.h"
+#include "ota_root_ca.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -138,7 +139,7 @@ static void modem_print_text_or_summary(const char *prefix, const char *text)
 #define HTTP_OTA_RANGE_WINDOW  32768U
 #define HTTP_OTA_USE_RANGE_WINDOWS    1U
 #define HTTP_OTA_SSL_CONTEXT_ID       1U
-#define HTTP_OTA_CA_FILE              "ota_root_ca.pem"
+#define HTTP_OTA_CA_FILE              "ota_gts_root_r4.pem"
 #define HTTP_OTA_ACTION_MS     120000UL
 #define HTTP_OTA_READ_MS       30000UL
 #define HTTP_OTA_TAIL_WAIT_MS  80UL
@@ -167,6 +168,8 @@ static void modem_print_text_or_summary(const char *prefix, const char *text)
 #define AT_TRACE_TEXT(prefix, text) do { if (debug_uart_at_is_enabled()) { modem_print_text_or_summary((prefix), (text)); } } while (0)
 
 static char s_http_ota_cmd[HTTP_OTA_CMD_MAX];
+static uint8_t s_ota_ca_ready;
+static uint8_t s_ota_tls_clock_ready;
 static uint8_t s_http_ota_chunk[HTTP_OTA_CHUNK_SIZE];
 static uint8_t s_tcp_ota_range_buf[TCP_OTA_RANGE_SIZE];
 static uint8_t s_tcp_ota_verify_buf[TCP_OTA_RANGE_SIZE];
@@ -278,6 +281,154 @@ static uint8_t modem_http_send_wait_ok_locked(const char *cmd,
     return 0U;
 }
 
+static uint8_t modem_http_ca_file_exists_locked(uint8_t *out_present)
+{
+    char line[192];
+    uint32_t start = HAL_GetTick();
+    uint8_t present = 0U;
+
+    if (!out_present) return 0U;
+    *out_present = 0U;
+    u2_flush_all();
+    u2_send_cmd("AT+CCERTLIST");
+
+    while ((HAL_GetTick() - start) < 8000U) {
+        modem_http_kick_watchdog();
+        int n = u2rx_read_line(&g_u2rx, line, (int)sizeof(line), 250U);
+        if (n <= 0) {
+            osDelay(1U);
+            continue;
+        }
+
+        trim_crlf(line);
+        if (strstr(line, HTTP_OTA_CA_FILE)) present = 1U;
+        if (strstr(line, "ERROR") || strstr(line, "+CME ERROR")) return 0U;
+        if (!strcmp(line, "OK")) {
+            *out_present = present;
+            return 1U;
+        }
+    }
+
+    return 0U;
+}
+
+static uint8_t modem_http_wait_ok_after_data_locked(uint32_t timeout_ms)
+{
+    char line[192];
+    uint32_t start = HAL_GetTick();
+
+    while ((HAL_GetTick() - start) < timeout_ms) {
+        modem_http_kick_watchdog();
+        int n = u2rx_read_line(&g_u2rx, line, (int)sizeof(line), 250U);
+        if (n <= 0) {
+            osDelay(1U);
+            continue;
+        }
+
+        trim_crlf(line);
+        if (strstr(line, "ERROR") || strstr(line, "+CME ERROR")) return 0U;
+        if (!strcmp(line, "OK")) return 1U;
+    }
+
+    return 0U;
+}
+
+static uint8_t modem_http_modem_clock_is_valid_locked(void)
+{
+    char line[192];
+    uint32_t start = HAL_GetTick();
+
+    u2_flush_all();
+    u2_send_cmd("AT+CCLK?");
+    while ((HAL_GetTick() - start) < 5000U) {
+        modem_http_kick_watchdog();
+        int n = u2rx_read_line(&g_u2rx, line, (int)sizeof(line), 250U);
+        if (n <= 0) {
+            osDelay(1U);
+            continue;
+        }
+
+        trim_crlf(line);
+        unsigned year, month, day, hour, minute, second;
+        if (sscanf(line, "+CCLK: \"%2u/%2u/%2u,%2u:%2u:%2u",
+                   &year, &month, &day, &hour, &minute, &second) == 6) {
+            return (year >= 20U && month >= 1U && month <= 12U &&
+                    day >= 1U && day <= 31U && hour <= 23U &&
+                    minute <= 59U && second <= 60U) ? 1U : 0U;
+        }
+        if (!strcmp(line, "ERROR") || strstr(line, "+CME ERROR")) return 0U;
+    }
+    return 0U;
+}
+
+static uint8_t modem_http_provision_ca_locked(void)
+{
+    char cmd[128];
+    uint8_t present = 0U;
+    if (!s_ota_tls_clock_ready) {
+        if (!modem_http_send_wait_ok_locked("AT+CTZU=1", NULL, 5000U)) {
+            modem_http_set_last_error("ota_modem_network_time_enable_failed");
+            return 0U;
+        }
+        /* Use network-provided modem time. Never overwrite it with an MCU RTC
+         * that could have been initialized from a build-time fallback. */
+        uint8_t clock_valid = 0U;
+        for (uint8_t attempt = 0U; attempt < 6U; attempt++) {
+            if (modem_http_modem_clock_is_valid_locked()) {
+                clock_valid = 1U;
+                break;
+            }
+            osDelay(5000U);
+        }
+        if (!clock_valid) {
+            modem_http_set_last_error("ota_modem_network_time_unavailable");
+            return 0U;
+        }
+        s_ota_tls_clock_ready = 1U;
+    }
+
+    if (s_ota_ca_ready) return 1U;
+    if (!modem_http_ca_file_exists_locked(&present)) {
+        modem_http_set_last_error("ota_ca_list_failed");
+        return 0U;
+    }
+
+    if (!present) {
+        int n = snprintf(cmd, sizeof(cmd), "AT+CCERTDOWN=\"%s\",%u",
+                         HTTP_OTA_CA_FILE, OTA_ROOT_CA_PEM_SIZE);
+        if (n < 0 || (size_t)n >= sizeof(cmd)) {
+            modem_http_set_last_error("ota_ca_command_invalid");
+            return 0U;
+        }
+
+        u2_flush_all();
+        HTTP_OTA_LOG("[HTTP->GSM] AT+CCERTDOWN file=%s bytes=%u\r\n",
+                     HTTP_OTA_CA_FILE, OTA_ROOT_CA_PEM_SIZE);
+        u2_send_cmd(cmd);
+        if (!u2rx_wait_for(&g_u2rx, ">", 8000U)) {
+            modem_http_set_last_error("ota_ca_download_prompt_timeout");
+            return 0U;
+        }
+        if (HAL_UART_Transmit(&huart6,
+                              (uint8_t *)ota_root_ca_pem,
+                              (uint16_t)OTA_ROOT_CA_PEM_SIZE,
+                              10000U) != HAL_OK ||
+            !modem_http_wait_ok_after_data_locked(10000U)) {
+            modem_http_set_last_error("ota_ca_download_failed");
+            return 0U;
+        }
+
+        if (!modem_http_ca_file_exists_locked(&present) || !present) {
+            modem_http_set_last_error("ota_ca_install_unverified");
+            return 0U;
+        }
+    }
+
+    s_ota_ca_ready = 1U;
+    HTTP_OTA_LOG("[OTA][HTTP] trusted CA installed: %s\r\n", HTTP_OTA_CA_FILE);
+    return 1U;
+}
+
 static void modem_http_drain_until_quiet_locked(uint32_t max_ms,
                                                 uint32_t quiet_ms)
 {
@@ -381,6 +532,11 @@ static uint8_t modem_http_start_request_locked(const char *url,
                                                uint32_t *out_len)
 {
     (void)modem_http_send_wait_ok_locked("AT+HTTPTERM", NULL, 5000U);
+
+    if (!strncmp(url, "https://", 8U) && !modem_http_provision_ca_locked()) {
+        HTTP_OTA_LOG("[OTA][HTTP] trusted CA provisioning failed\r\n");
+        return 0U;
+    }
 
     if (!modem_http_send_wait_ok_locked("AT+HTTPINIT", NULL, 10000U)) {
         HTTP_OTA_LOG("[OTA][HTTP] HTTPINIT failed\r\n");
