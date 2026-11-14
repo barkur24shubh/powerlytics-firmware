@@ -1,0 +1,134 @@
+name: Register existing private R2 firmware release
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_model_id:
+        description: DeviceModel MongoDB ID from the failed upload run
+        required: true
+        type: string
+      firmware_version:
+        description: Existing immutable firmware version in R2
+        required: true
+        type: string
+      board_slug:
+        description: Board identifier recorded in the R2 manifest
+        required: true
+        type: choice
+        options:
+          - b1-v4-c
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-register-${{ inputs.device_model_id }}-${{ inputs.firmware_version }}
+  cancel-in-progress: false
+
+jobs:
+  register:
+    name: Verify existing R2 object and register STAGED release
+    runs-on: ubuntu-latest
+    environment: firmware-release
+    env:
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: "true"
+      DEVICE_MODEL_ID: ${{ inputs.device_model_id }}
+      FIRMWARE_VERSION: ${{ inputs.firmware_version }}
+      BOARD_SLUG: ${{ inputs.board_slug }}
+
+    steps:
+      - name: Validate configuration and release inputs
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          BACKEND_API_URL: ${{ secrets.BACKEND_API_URL }}
+          FIRMWARE_WEBHOOK_API_KEY: ${{ secrets.FIRMWARE_WEBHOOK_API_KEY }}
+        run: |
+          set -euo pipefail
+          required=(AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ACCOUNT_ID R2_BUCKET BACKEND_API_URL FIRMWARE_WEBHOOK_API_KEY DEVICE_MODEL_ID FIRMWARE_VERSION BOARD_SLUG)
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then echo "::error::Missing required setting: ${name}"; exit 1; fi
+          done
+          if [[ ! "${DEVICE_MODEL_ID}" =~ ^[a-fA-F0-9]{24}$ ]]; then echo "::error::device_model_id must be a MongoDB ObjectId"; exit 1; fi
+          if [[ ! "${FIRMWARE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.-]+)?$ || ${#FIRMWARE_VERSION} -gt 31 ]]; then echo "::error::firmware_version must be semantic-version shaped and at most 31 characters"; exit 1; fi
+
+      - name: Verify existing immutable image and manifest in private R2
+        id: release
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          prefix="firmware/${DEVICE_MODEL_ID}/${FIRMWARE_VERSION}"
+          image="${prefix}/firmware.bin"
+          aws s3api head-object --bucket "${R2_BUCKET}" --key "${image}" --endpoint-url "${endpoint}" >/dev/null
+          aws s3 cp "s3://${R2_BUCKET}/${prefix}/manifest.json" manifest.json --endpoint-url "${endpoint}" --no-progress
+
+          manifest_model="$(jq -r '.deviceModelId // empty' manifest.json)"
+          manifest_board="$(jq -r '.boardSlug // empty' manifest.json)"
+          manifest_version="$(jq -r '.firmwareVersion // empty' manifest.json)"
+          manifest_size="$(jq -r '.sizeBytes // empty' manifest.json)"
+          manifest_sha="$(jq -r '.checksumSha256 // empty' manifest.json)"
+          manifest_signature="$(jq -r '.signatureEd25519 // empty' manifest.json)"
+          manifest_commit="$(jq -r '.sourceCommitSha // empty' manifest.json)"
+          manifest_repo="$(jq -r '.sourceRepo // empty' manifest.json)"
+          if [[ "${manifest_model}" != "${DEVICE_MODEL_ID}" || "${manifest_board}" != "${BOARD_SLUG}" || "${manifest_version}" != "${FIRMWARE_VERSION}" ]]; then
+            echo "::error::R2 manifest identity does not match the selected model, board, and version"; exit 1
+          fi
+          if [[ ! "${manifest_size}" =~ ^[0-9]+$ || ! "${manifest_sha}" =~ ^[a-fA-F0-9]{64}$ || ! "${manifest_signature}" =~ ^[a-fA-F0-9]{128}$ || -z "${manifest_commit}" || -z "${manifest_repo}" ]]; then
+            echo "::error::R2 manifest is missing valid size, checksum, signature, or source metadata"; exit 1
+          fi
+
+          aws s3 cp "s3://${R2_BUCKET}/${image}" firmware.bin --endpoint-url "${endpoint}" --no-progress
+          actual_size="$(stat -c%s firmware.bin)"
+          actual_sha="$(sha256sum firmware.bin | awk '{print $1}')"
+          if [[ "${actual_size}" != "${manifest_size}" || "${actual_sha,,}" != "${manifest_sha,,}" ]]; then
+            echo "::error::Existing R2 image differs from the signed manifest"; exit 1
+          fi
+          echo "size_bytes=${manifest_size}" >> "${GITHUB_OUTPUT}"
+          echo "checksum_sha256=${manifest_sha,,}" >> "${GITHUB_OUTPUT}"
+          echo "signature_ed25519=${manifest_signature,,}" >> "${GITHUB_OUTPUT}"
+          echo "source_commit_sha=${manifest_commit}" >> "${GITHUB_OUTPUT}"
+          echo "source_repo=${manifest_repo}" >> "${GITHUB_OUTPUT}"
+
+      - name: Register the verified image as STAGED with Powerlytics
+        shell: bash
+        env:
+          BACKEND_API_URL: ${{ secrets.BACKEND_API_URL }}
+          FIRMWARE_WEBHOOK_API_KEY: ${{ secrets.FIRMWARE_WEBHOOK_API_KEY }}
+        run: |
+          set -euo pipefail
+          payload="$(jq -n \
+            --arg deviceModelId "${DEVICE_MODEL_ID}" \
+            --arg deviceModel "${BOARD_SLUG}" \
+            --arg version "${FIRMWARE_VERSION}" \
+            --arg checksumSha256 "${{ steps.release.outputs.checksum_sha256 }}" \
+            --arg signatureEd25519 "${{ steps.release.outputs.signature_ed25519 }}" \
+            --arg sourceCommitSha "${{ steps.release.outputs.source_commit_sha }}" \
+            --arg sourceRepo "${{ steps.release.outputs.source_repo }}" \
+            --argjson sizeBytes "${{ steps.release.outputs.size_bytes }}" \
+            '{deviceModelId:$deviceModelId,deviceModel:$deviceModel,version:$version,checksumSha256:$checksumSha256,signatureEd25519:$signatureEd25519,sizeBytes:$sizeBytes,sourceCommitSha:$sourceCommitSha,sourceRepo:$sourceRepo}')"
+          response_file="$(mktemp)"
+          trap 'rm -f "${response_file}"' EXIT
+          if ! http_status="$(curl --silent --show-error --output "${response_file}" --write-out '%{http_code}' \
+            -X POST "${BACKEND_API_URL%/}/firmware/webhook/publish" \
+            -H "x-api-key: ${FIRMWARE_WEBHOOK_API_KEY}" \
+            -H "Content-Type: application/json" \
+            --data "${payload}")"; then
+            cat "${response_file}"
+            exit 1
+          fi
+          if [[ ! "${http_status}" =~ ^2[0-9][0-9]$ ]]; then
+            echo "::error::Powerlytics publish webhook returned HTTP ${http_status}"
+            cat "${response_file}"
+            exit 1
+          fi
+          echo "Verified existing private R2 image and registered ${BOARD_SLUG} ${FIRMWARE_VERSION} as STAGED. No device deployment was created."
