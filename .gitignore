@@ -55,10 +55,14 @@ Debug/Middlewares/Third_Party/FreeRTOS/Source/portable/MemMang/*
 *.log
 Core/Inc/config.local.h
 Core/Inc/board_active_config.h
+Core/Inc/ota_root_ca.h
 
 # Keep generated build output out of normal commits.
 artifacts/*
 !artifacts/
 !artifacts/README.md
 
-Core/Inc/ota_root_ca.h
+# Local signing secret and generated secondary/bootloader build outputs
+/ota-signing-private.pem
+/Bootloader/Debug/
+/SecondaryMCU/**/build/

@@ -1,5 +1,13 @@
 Archive member included to satisfy reference by file (symbol)
 
+/Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_aeabi_uldivmod.o)
+                              Debug/ThirdParty/monocypher/monocypher.o (__aeabi_uldivmod)
+/Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_popcountsi2.o)
+                              Debug/Src/bootloader.o (__popcountsi2)
+/Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_udivmoddi4.o)
+                              /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_aeabi_uldivmod.o) (__udivmoddi4)
+/Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_dvmd_tls.o)
+                              /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_aeabi_uldivmod.o) (__aeabi_ldiv0)
 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-exit.o)
                               /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/crt0.o (exit)
 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-findfp.o)
@@ -8,6 +16,8 @@ Archive member included to satisfy reference by file (symbol)
                               /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-findfp.o) (_fwalk_sglue)
 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcmp.o)
                               Debug/Src/bootloader.o (memcmp)
+/Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memmove.o)
+                              Debug/ThirdParty/monocypher/monocypher.o (memmove)
 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memset.o)
                               /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/crt0.o (memset)
 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-init.o)
@@ -80,6 +90,23 @@ Discarded input sections
  .text          0x00000000        0x0 Debug/Src/bootloader.o
  .data          0x00000000        0x0 Debug/Src/bootloader.o
  .bss           0x00000000        0x0 Debug/Src/bootloader.o
+ .text.hex_nibble
+                0x00000000       0x2e Debug/Src/bootloader.o
+ .text          0x00000000        0x0 Debug/Src/ota_signature.o
+ .data          0x00000000        0x0 Debug/Src/ota_signature.o
+ .bss           0x00000000        0x0 Debug/Src/ota_signature.o
+ .text.append_bytes
+                0x00000000       0x36 Debug/Src/ota_signature.o
+ .rodata.ota_signature_build_message.str1.1
+                0x00000000        0x2 Debug/Src/ota_signature.o
+ .text.ota_signature_build_message
+                0x00000000      0x1b0 Debug/Src/ota_signature.o
+ .rodata.prefix.0
+                0x00000000       0x14 Debug/Src/ota_signature.o
+ .rodata.hex.1  0x00000000       0x11 Debug/Src/ota_signature.o
+ .comment       0x00000000       0x44 Debug/Src/ota_signature.o
+ .ARM.attributes
+                0x00000000       0x2e Debug/Src/ota_signature.o
  .text          0x00000000        0x0 Debug/Core/Src/sha256.o
  .data          0x00000000        0x0 Debug/Core/Src/sha256.o
  .bss           0x00000000        0x0 Debug/Core/Src/sha256.o
@@ -88,6 +115,314 @@ Discarded input sections
  .text.sha256_hex
                 0x00000000       0x22 Debug/Core/Src/sha256.o
  .rodata.hex.0  0x00000000       0x11 Debug/Core/Src/sha256.o
+ .text          0x00000000        0x0 Debug/ThirdParty/monocypher/monocypher.o
+ .data          0x00000000        0x0 Debug/ThirdParty/monocypher/monocypher.o
+ .bss           0x00000000        0x0 Debug/ThirdParty/monocypher/monocypher.o
+ .text.load24_le
+                0x00000000       0x10 Debug/ThirdParty/monocypher/monocypher.o
+ .text.load32_le
+                0x00000000        0x4 Debug/ThirdParty/monocypher/monocypher.o
+ .text.load64_le
+                0x00000000       0x16 Debug/ThirdParty/monocypher/monocypher.o
+ .text.store32_le
+                0x00000000       0x10 Debug/ThirdParty/monocypher/monocypher.o
+ .text.load32_le_buf
+                0x00000000       0x1a Debug/ThirdParty/monocypher/monocypher.o
+ .text.load64_le_buf
+                0x00000000       0x1e Debug/ThirdParty/monocypher/monocypher.o
+ .text.store32_le_buf
+                0x00000000       0x18 Debug/ThirdParty/monocypher/monocypher.o
+ .text.store64_le_buf
+                0x00000000       0x2a Debug/ThirdParty/monocypher/monocypher.o
+ .text.x16      0x00000000       0x3a Debug/ThirdParty/monocypher/monocypher.o
+ .text.x32      0x00000000       0x20 Debug/ThirdParty/monocypher/monocypher.o
+ .text.chacha20_rounds
+                0x00000000      0x1ae Debug/ThirdParty/monocypher/monocypher.o
+ .text.poly_blocks
+                0x00000000      0x274 Debug/ThirdParty/monocypher/monocypher.o
+ .text.blake2b_compress
+                0x00000000     0x3b48 Debug/ThirdParty/monocypher/monocypher.o
+ .text.copy_block
+                0x00000000        0x8 Debug/ThirdParty/monocypher/monocypher.o
+ .text.xor_block
+                0x00000000       0x26 Debug/ThirdParty/monocypher/monocypher.o
+ .text.g_rounds
+                0x00000000      0xc5c Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_0     0x00000000        0x8 Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_1     0x00000000        0xe Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_copy  0x00000000       0x12 Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_neg   0x00000000       0x14 Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_add   0x00000000       0x1a Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_sub   0x00000000       0x1a Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_cswap
+                0x00000000       0xd2 Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_ccopy
+                0x00000000       0x96 Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_frombytes_mask
+                0x00000000      0x22c Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_mul_small
+                0x00000000      0x1d2 Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_mul   0x00000000      0x564 Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_sq    0x00000000      0x39c Debug/ThirdParty/monocypher/monocypher.o
+ .text.scalar_bit
+                0x00000000       0x18 Debug/ThirdParty/monocypher/monocypher.o
+ .text.multiply
+                0x00000000       0x44 Debug/ThirdParty/monocypher/monocypher.o
+ .text.is_above_l
+                0x00000000       0x30 Debug/ThirdParty/monocypher/monocypher.o
+ .text.remove_l
+                0x00000000       0x4c Debug/ThirdParty/monocypher/monocypher.o
+ .text.ge_zero  0x00000000       0x24 Debug/ThirdParty/monocypher/monocypher.o
+ .text.ge_cache
+                0x00000000       0x38 Debug/ThirdParty/monocypher/monocypher.o
+ .text.ge_add   0x00000000       0xb0 Debug/ThirdParty/monocypher/monocypher.o
+ .text.ge_madd  0x00000000       0xa6 Debug/ThirdParty/monocypher/monocypher.o
+ .text.ge_double
+                0x00000000       0xa6 Debug/ThirdParty/monocypher/monocypher.o
+ .text.slide_init
+                0x00000000       0x24 Debug/ThirdParty/monocypher/monocypher.o
+ .text.slide_step
+                0x00000000       0xb6 Debug/ThirdParty/monocypher/monocypher.o
+ .text.lookup_add
+                0x00000000       0xdc Debug/ThirdParty/monocypher/monocypher.o
+ .text.add_xl   0x00000000       0x48 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_poly1305_update.part.0
+                0x00000000       0x66 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_blake2b_update.part.0
+                0x00000000      0x16a Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_verify16
+                0x00000000       0x12 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_verify32
+                0x00000000       0x12 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_verify64
+                0x00000000       0x2c Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_wipe
+                0x00000000       0x10 Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_tobytes
+                0x00000000       0xf6 Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_isequal
+                0x00000000       0x36 Debug/ThirdParty/monocypher/monocypher.o
+ .text.invsqrt  0x00000000      0x1d8 Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_invert
+                0x00000000       0x34 Debug/ThirdParty/monocypher/monocypher.o
+ .text.scalarmult
+                0x00000000      0x168 Debug/ThirdParty/monocypher/monocypher.o
+ .text.mod_l    0x00000000       0xf8 Debug/ThirdParty/monocypher/monocypher.o
+ .text.fe_isodd
+                0x00000000       0x22 Debug/ThirdParty/monocypher/monocypher.o
+ .text.ge_frombytes_neg_vartime
+                0x00000000       0x94 Debug/ThirdParty/monocypher/monocypher.o
+ .text.ge_tobytes
+                0x00000000       0x56 Debug/ThirdParty/monocypher/monocypher.o
+ .text.select_lop
+                0x00000000       0x46 Debug/ThirdParty/monocypher/monocypher.o
+ .text.redc     0x00000000       0xb4 Debug/ThirdParty/monocypher/monocypher.o
+ .text.blake_update_32
+                0x00000000       0x22 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.crypto_chacha20_h.str1.1
+                0x00000000       0x11 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_chacha20_h
+                0x00000000       0x58 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_chacha20_djb
+                0x00000000      0x130 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_chacha20_ietf
+                0x00000000       0x20 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_chacha20_x
+                0x00000000       0x42 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_poly1305_init
+                0x00000000       0x4c Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_poly1305_update
+                0x00000000        0x8 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_poly1305_final
+                0x00000000       0xa2 Debug/ThirdParty/monocypher/monocypher.o
+ .text.lock_auth
+                0x00000000       0x88 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_poly1305
+                0x00000000       0x28 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_blake2b_keyed_init
+                0x00000000       0x98 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_blake2b_init
+                0x00000000        0x8 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_blake2b_update
+                0x00000000        0x8 Debug/ThirdParty/monocypher/monocypher.o
+ .text.blake_update_32_buf
+                0x00000000       0x1c Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_blake2b_final
+                0x00000000       0x66 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_blake2b_keyed
+                0x00000000       0x22 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_blake2b
+                0x00000000       0x14 Debug/ThirdParty/monocypher/monocypher.o
+ .text.extended_hash
+                0x00000000       0x92 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_argon2
+                0x00000000      0x3e8 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_eddsa_trim_scalar
+                0x00000000       0x2a Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_x25519
+                0x00000000       0x26 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_x25519_public_key
+                0x00000000        0xc Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_eddsa_reduce
+                0x00000000       0x22 Debug/ThirdParty/monocypher/monocypher.o
+ .text.hash_reduce.constprop.0
+                0x00000000       0x48 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_eddsa_mul_add
+                0x00000000       0x64 Debug/ThirdParty/monocypher/monocypher.o
+ .text.ge_scalarmult_base
+                0x00000000       0xd4 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_eddsa_check_equation
+                0x00000000      0x1b4 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_eddsa_scalarbase
+                0x00000000       0x20 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_eddsa_key_pair
+                0x00000000       0x80 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_eddsa_sign
+                0x00000000       0x88 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_eddsa_check
+                0x00000000       0x26 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_eddsa_to_x25519
+                0x00000000       0x50 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_x25519_to_eddsa
+                0x00000000       0x4c Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_x25519_dirty_small
+                0x00000000       0x34 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_x25519_dirty_fast
+                0x00000000       0xd0 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_elligator_map
+                0x00000000       0xf8 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_elligator_rev
+                0x00000000       0xa4 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_elligator_key_pair
+                0x00000000       0xb0 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_x25519_inverse
+                0x00000000      0x110 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_aead_init_x
+                0x00000000       0x2c Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_aead_init_djb
+                0x00000000       0x32 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_aead_init_ietf
+                0x00000000       0x3a Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_aead_write
+                0x00000000       0x84 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_aead_read
+                0x00000000       0x98 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_aead_lock
+                0x00000000       0x36 Debug/ThirdParty/monocypher/monocypher.o
+ .text.crypto_aead_unlock
+                0x00000000       0x3a Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.k.0    0x00000000       0x20 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.Lm2.1  0x00000000       0x20 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.dirty_base_point.2
+                0x00000000       0x20 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.half_ones.3
+                0x00000000       0x20 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.half_mod_L.4
+                0x00000000       0x20 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.zero_point.5
+                0x00000000       0x20 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.r.6    0x00000000       0x24 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.base_point.7
+                0x00000000       0x20 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.A      0x00000000       0x28 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.b_comb_high
+                0x00000000      0x3c0 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.b_comb_low
+                0x00000000      0x3c0 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.b_window
+                0x00000000      0x3c0 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.L      0x00000000       0x20 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.A2     0x00000000       0x28 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.ufactor
+                0x00000000       0x28 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.lop_y  0x00000000       0x28 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.lop_x  0x00000000       0x28 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.D2     0x00000000       0x28 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.d      0x00000000       0x28 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.sqrtm1
+                0x00000000       0x28 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.fe_one
+                0x00000000       0x28 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.crypto_argon2_no_extras
+                0x00000000       0x10 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.iv     0x00000000       0x40 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata.zero   0x00000000       0x80 Debug/ThirdParty/monocypher/monocypher.o
+ .rodata        0x00000000       0x20 Debug/ThirdParty/monocypher/monocypher.o
+ .comment       0x00000000       0x44 Debug/ThirdParty/monocypher/monocypher.o
+ .ARM.attributes
+                0x00000000       0x2e Debug/ThirdParty/monocypher/monocypher.o
+ .text          0x00000000        0x0 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .data          0x00000000        0x0 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .bss           0x00000000        0x0 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.load64_be_buf
+                0x00000000       0x20 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.sha512_compress
+                0x00000000      0x51c Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.sha512_set_input
+                0x00000000       0x36 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_sha512_update.part.0
+                0x00000000      0x15c Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_sha512_init
+                0x00000000       0xb0 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_sha512_update
+                0x00000000        0x8 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_sha512_final
+                0x00000000       0xb4 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.hash_reduce.constprop.0
+                0x00000000       0x4e Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_sha512
+                0x00000000       0x26 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.ed25519_dom_sign
+                0x00000000       0x94 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_sha512_hmac_init
+                0x00000000       0x4c Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_sha512_hmac_update
+                0x00000000        0x6 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_sha512_hmac_final
+                0x00000000       0x54 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_sha512_hmac
+                0x00000000       0x24 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_sha512_hkdf_expand
+                0x00000000       0x8a Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_sha512_hkdf
+                0x00000000       0x36 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_ed25519_key_pair
+                0x00000000       0x78 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_ed25519_sign
+                0x00000000       0x14 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_ed25519_check
+                0x00000000       0x2c Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_ed25519_ph_sign
+                0x00000000       0x1c Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text.crypto_ed25519_ph_check
+                0x00000000       0x34 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .rodata.domain
+                0x00000000       0x22 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .rodata.K      0x00000000      0x280 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .comment       0x00000000       0x44 Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .ARM.attributes
+                0x00000000       0x2e Debug/ThirdParty/monocypher/monocypher-ed25519.o
+ .text          0x00000000       0x30 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_aeabi_uldivmod.o)
+ .data          0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_aeabi_uldivmod.o)
+ .bss           0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_aeabi_uldivmod.o)
+ .debug_frame   0x00000000       0x2c /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_aeabi_uldivmod.o)
+ .ARM.attributes
+                0x00000000       0x1e /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_aeabi_uldivmod.o)
+ .data          0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_popcountsi2.o)
+ .bss           0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_popcountsi2.o)
+ .text          0x00000000      0x2f8 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_udivmoddi4.o)
+ .data          0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_udivmoddi4.o)
+ .bss           0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_udivmoddi4.o)
+ .ARM.extab     0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_udivmoddi4.o)
+ .ARM.exidx     0x00000000        0x8 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_udivmoddi4.o)
+ .debug_frame   0x00000000       0x34 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_udivmoddi4.o)
+ .ARM.attributes
+                0x00000000       0x2e /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_udivmoddi4.o)
+ .text          0x00000000        0x4 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_dvmd_tls.o)
+ .data          0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_dvmd_tls.o)
+ .bss           0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_dvmd_tls.o)
+ .ARM.attributes
+                0x00000000       0x1e /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_dvmd_tls.o)
  .text          0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-exit.o)
  .data          0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-exit.o)
  .bss           0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-exit.o)
@@ -137,6 +472,13 @@ Discarded input sections
  .text          0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcmp.o)
  .data          0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcmp.o)
  .bss           0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcmp.o)
+ .text          0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memmove.o)
+ .data          0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memmove.o)
+ .bss           0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memmove.o)
+ .text.memmove  0x00000000       0x34 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memmove.o)
+ .debug_frame   0x00000000       0x28 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memmove.o)
+ .ARM.attributes
+                0x00000000       0x2e /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memmove.o)
  .text          0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memset.o)
  .data          0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memset.o)
  .bss           0x00000000        0x0 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memset.o)
@@ -390,7 +732,10 @@ LOAD /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.id
 LOAD /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/crt0.o
 LOAD Debug/Startup/startup_stm32f407vetx_boot.o
 LOAD Debug/Src/bootloader.o
+LOAD Debug/Src/ota_signature.o
 LOAD Debug/Core/Src/sha256.o
+LOAD Debug/ThirdParty/monocypher/monocypher.o
+LOAD Debug/ThirdParty/monocypher/monocypher-ed25519.o
 START GROUP
 LOAD /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a
 LOAD /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a
@@ -416,90 +761,102 @@ LOAD /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.id
                 0x08000000                g_pfnVectors
                 0x08000188                        . = ALIGN (0x4)
 
-.text           0x08000188      0xc84
+.text           0x08000188      0xe24
                 0x08000188                        . = ALIGN (0x4)
  *(.text)
+ .text          0x08000188       0x28 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_popcountsi2.o)
+                0x08000188                __popcountsi2
  *(.text*)
  .text.Reset_Handler
-                0x08000188       0x48 Debug/Startup/startup_stm32f407vetx_boot.o
-                0x08000188                Reset_Handler
+                0x080001b0       0x48 Debug/Startup/startup_stm32f407vetx_boot.o
+                0x080001b0                Reset_Handler
  .text.Default_Handler
-                0x080001d0        0x4 Debug/Startup/startup_stm32f407vetx_boot.o
-                0x080001d0                Default_Handler
- .text.delay_cycles
-                0x080001d4       0x14 Debug/Src/bootloader.o
+                0x080001f8        0x4 Debug/Startup/startup_stm32f407vetx_boot.o
+                0x080001f8                Default_Handler
  .text.flash_wait_ready
-                0x080001e8       0x34 Debug/Src/bootloader.o
+                0x080001fc       0x34 Debug/Src/bootloader.o
  .text.flash_lock
-                0x0800021c       0x10 Debug/Src/bootloader.o
+                0x08000230       0x10 Debug/Src/bootloader.o
+ .text.flash_erase_sector
+                0x08000240       0x44 Debug/Src/bootloader.o
+ .text.flash_program_byte
+                0x08000284       0x3c Debug/Src/bootloader.o
+ .text.sha256_internal_flash
+                0x080002c0       0x68 Debug/Src/bootloader.o
  .text.boot_uart_puts.part.0
-                0x0800022c       0x28 Debug/Src/bootloader.o
+                0x08000328       0x28 Debug/Src/bootloader.o
  .text.app_is_valid.constprop.0
-                0x08000254       0x2c Debug/Src/bootloader.o
+                0x08000350       0x2c Debug/Src/bootloader.o
  .text.spi1_xfer
-                0x08000280       0x3c Debug/Src/bootloader.o
+                0x0800037c       0x3c Debug/Src/bootloader.o
  .text.w25q_read
-                0x080002bc       0x64 Debug/Src/bootloader.o
+                0x080003b8       0x64 Debug/Src/bootloader.o
+ .text.sha256_w25q
+                0x0800041c       0x6c Debug/Src/bootloader.o
  .text.w25q_wait_ready
-                0x08000320       0x58 Debug/Src/bootloader.o
+                0x08000488       0x58 Debug/Src/bootloader.o
+ .text.w25q_program_bytes
+                0x080004e0       0x8c Debug/Src/bootloader.o
  .text.manifest_write_result
-                0x08000378       0x78 Debug/Src/bootloader.o
- .text.manifest_clear.isra.0
-                0x080003f0       0x54 Debug/Src/bootloader.o
+                0x0800056c       0x18 Debug/Src/bootloader.o
+ .text.led_error_loop
+                0x08000584       0x3c Debug/Src/bootloader.o
+ .text.flash_restore_backup
+                0x080005c0       0xe8 Debug/Src/bootloader.o
  .text.boot_main
-                0x08000444      0x540 Debug/Src/bootloader.o
-                0x08000444                boot_main
+                0x080006a8      0x3e4 Debug/Src/bootloader.o
+                0x080006a8                boot_main
  .text.sha256_transform
-                0x08000984      0x140 Debug/Core/Src/sha256.o
+                0x08000a8c      0x140 Debug/Core/Src/sha256.o
  .text.sha256_init
-                0x08000ac4       0x58 Debug/Core/Src/sha256.o
-                0x08000ac4                sha256_init
+                0x08000bcc       0x58 Debug/Core/Src/sha256.o
+                0x08000bcc                sha256_init
  .text.sha256_update
-                0x08000b1c       0x40 Debug/Core/Src/sha256.o
-                0x08000b1c                sha256_update
+                0x08000c24       0x40 Debug/Core/Src/sha256.o
+                0x08000c24                sha256_update
  .text.sha256_final
-                0x08000b5c       0x92 Debug/Core/Src/sha256.o
-                0x08000b5c                sha256_final
- .text.memcmp   0x08000bee       0x20 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcmp.o)
-                0x08000bee                memcmp
- .text.memcpy   0x08000c0e       0x1c /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcpy-stub.o)
-                0x08000c0e                memcpy
+                0x08000c64       0x92 Debug/Core/Src/sha256.o
+                0x08000c64                sha256_final
+ .text.memcmp   0x08000cf6       0x20 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcmp.o)
+                0x08000cf6                memcmp
+ .text.memcpy   0x08000d16       0x1c /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcpy-stub.o)
+                0x08000d16                memcpy
  *(.rodata)
  *(.rodata*)
  .rodata.boot_main.str1.1
-                0x08000c2a       0xe2 Debug/Src/bootloader.o
- .rodata.k      0x08000d0c      0x100 Debug/Core/Src/sha256.o
-                0x08000e0c                        . = ALIGN (0x4)
-                0x08000e0c                        _etext = .
-                0x08000e14                        _sidata = LOADADDR (.data)
+                0x08000d32      0x17a Debug/Src/bootloader.o
+ .rodata.k      0x08000eac      0x100 Debug/Core/Src/sha256.o
+                0x08000fac                        . = ALIGN (0x4)
+                0x08000fac                        _etext = .
+                0x08000fb4                        _sidata = LOADADDR (.data)
 
-.glue_7         0x08000e0c        0x0
- .glue_7        0x08000e0c        0x0 linker stubs
+.glue_7         0x08000fac        0x0
+ .glue_7        0x08000fac        0x0 linker stubs
 
-.glue_7t        0x08000e0c        0x0
- .glue_7t       0x08000e0c        0x0 linker stubs
+.glue_7t        0x08000fac        0x0
+ .glue_7t       0x08000fac        0x0 linker stubs
 
-.vfp11_veneer   0x08000e0c        0x0
- .vfp11_veneer  0x08000e0c        0x0 linker stubs
+.vfp11_veneer   0x08000fac        0x0
+ .vfp11_veneer  0x08000fac        0x0 linker stubs
 
-.v4_bx          0x08000e0c        0x0
- .v4_bx         0x08000e0c        0x0 linker stubs
+.v4_bx          0x08000fac        0x0
+ .v4_bx         0x08000fac        0x0 linker stubs
 
-.init           0x08000e0c        0x4
- .init          0x08000e0c        0x4 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/crti.o
-                0x08000e0c                _init
+.init           0x08000fac        0x4
+ .init          0x08000fac        0x4 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/crti.o
+                0x08000fac                _init
 
-.fini           0x08000e10        0x4
- .fini          0x08000e10        0x4 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/crti.o
-                0x08000e10                _fini
+.fini           0x08000fb0        0x4
+ .fini          0x08000fb0        0x4 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/crti.o
+                0x08000fb0                _fini
 
-.iplt           0x08000e14        0x0
- .iplt          0x08000e14        0x0 Debug/Startup/startup_stm32f407vetx_boot.o
+.iplt           0x08000fb4        0x0
+ .iplt          0x08000fb4        0x0 Debug/Startup/startup_stm32f407vetx_boot.o
 
-.rel.dyn        0x08000e14        0x0
- .rel.iplt      0x08000e14        0x0 Debug/Startup/startup_stm32f407vetx_boot.o
+.rel.dyn        0x08000fb4        0x0
+ .rel.iplt      0x08000fb4        0x0 Debug/Startup/startup_stm32f407vetx_boot.o
 
-.data           0x20000000        0x0 load address 0x08000e14
+.data           0x20000000        0x0 load address 0x08000fb4
                 0x20000000                        . = ALIGN (0x4)
                 0x20000000                        _sdata = .
  *(.data)
@@ -507,10 +864,10 @@ LOAD /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.id
                 0x20000000                        . = ALIGN (0x4)
                 0x20000000                        _edata = .
 
-.igot.plt       0x20000000        0x0 load address 0x08000e14
+.igot.plt       0x20000000        0x0 load address 0x08000fb4
  .igot.plt      0x20000000        0x0 Debug/Startup/startup_stm32f407vetx_boot.o
 
-.bss            0x20000000      0x200 load address 0x08000e14
+.bss            0x20000000      0x200 load address 0x08000fb4
                 0x20000000                        . = ALIGN (0x4)
                 0x20000000                        _sbss = .
  *(.bss)
@@ -532,9 +889,11 @@ LOAD /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.id
  .ARM.attributes
                 0x0000006d       0x2e Debug/Core/Src/sha256.o
  .ARM.attributes
-                0x0000009b       0x2e /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcmp.o)
+                0x0000009b       0x2e /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_popcountsi2.o)
  .ARM.attributes
-                0x000000c9       0x2e /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcpy-stub.o)
+                0x000000c9       0x2e /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcmp.o)
+ .ARM.attributes
+                0x000000f7       0x2e /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcpy-stub.o)
 OUTPUT(Debug/powerlytics_bootloader.elf elf32-littlearm)
 LOAD linker stubs
 
@@ -543,6 +902,7 @@ LOAD linker stubs
                                  0x44 (size before relaxing)
  .comment       0x00000043       0x44 Debug/Core/Src/sha256.o
 
-.debug_frame    0x00000000       0x50
- .debug_frame   0x00000000       0x28 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcmp.o)
- .debug_frame   0x00000028       0x28 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcpy-stub.o)
+.debug_frame    0x00000000       0x70
+ .debug_frame   0x00000000       0x20 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/thumb/v7e-m/nofp/libgcc.a(_popcountsi2.o)
+ .debug_frame   0x00000020       0x28 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcmp.o)
+ .debug_frame   0x00000048       0x28 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m/nofp/libc_nano.a(libc_a-memcpy-stub.o)

@@ -81,7 +81,7 @@ uint8_t SendCommandWithRetry(const char *cmd, const char *expected, uint16_t tim
 #define OTA_STAGING_BASE_ADDR               APP_OTA_STAGING_W25Q_ADDR
 #define OTA_STAGING_MAX_SIZE                APP_OTA_SLOT_SIZE
 #define OTA_MAX_ARTIFACT_URL_LEN            2000U
-#define OTA_SERIAL_DEBUG_PRINT              0U
+#define OTA_SERIAL_DEBUG_PRINT              1U
 
 #define OTA_LOG(...) do { if (OTA_SERIAL_DEBUG_PRINT) { print(__VA_ARGS__); } } while (0)
 
@@ -185,6 +185,12 @@ void MQTT_SetOtaFlash(W25Q_Handle *flash)
 uint8_t MQTT_OtaIsBusy(void)
 {
     return s_ota_busy;
+}
+
+static void mqtt_ota_release_busy(void)
+{
+    app_debug_led_set_ota_active(0U);
+    s_ota_busy = 0U;
 }
 
 static void ota_download_progress(uint32_t downloaded,
@@ -736,15 +742,6 @@ static uint8_t handle_ota_cjson(cJSON *root)
         return 1U;
     }
 
-    if (!publish_ota_status_reported(deployment_id,
-                                     "OTA_RECEIVED",
-                                     "RECEIVE",
-                                     0,
-                                     target_version,
-                                     "received")) {
-        return 1U;
-    }
-
     if (s_ota_busy) {
         (void)publish_ota_status_reported(deployment_id,
                                           "OTA_REJECTED",
@@ -752,6 +749,19 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                           0,
                                           target_version,
                                           "ota_busy");
+        return 1U;
+    }
+
+    /* Hold the OTA gate from the moment this queued command is accepted.
+     * The runtime uses this flag to suppress telemetry while OTA work runs. */
+    s_ota_busy = 1U;
+    if (!publish_ota_status_reported(deployment_id,
+                                     "OTA_RECEIVED",
+                                     "RECEIVE",
+                                     0,
+                                     target_version,
+                                     "received")) {
+        mqtt_ota_release_busy();
         return 1U;
     }
 
@@ -767,12 +777,14 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                           0,
                                           target_version,
                                           signature[0] == '\0' ? "missing_ed25519_signature" : "missing_required_field");
+        mqtt_ota_release_busy();
         return 1U;
     }
 
     if (strlen(signature) != 128U || !ota_hex_to_bytes_64(signature, signature_bytes)) {
         (void)publish_ota_status_reported(deployment_id, "OTA_REJECTED", "VALIDATE", 0,
                                           target_version, "invalid_ed25519_signature_format");
+        mqtt_ota_release_busy();
         return 1U;
     }
 
@@ -783,6 +795,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                           0,
                                           target_version,
                                           "device_model_mismatch");
+        mqtt_ota_release_busy();
         return 1U;
     }
 
@@ -794,6 +807,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                           0,
                                           target_version,
                                           url_reject_reason);
+        mqtt_ota_release_busy();
         return 1U;
     }
 
@@ -804,6 +818,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                           0,
                                           target_version,
                                           "ota_flash_not_ready");
+        mqtt_ota_release_busy();
         return 1U;
     }
 
@@ -815,6 +830,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                           0,
                                           target_version,
                                           "artifact_too_large");
+        mqtt_ota_release_busy();
         return 1U;
     }
 
@@ -824,6 +840,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                      1,
                                      target_version,
                                      "staging_to_external_flash")) {
+        mqtt_ota_release_busy();
         return 1U;
     }
 
@@ -831,7 +848,6 @@ static uint8_t handle_ota_cjson(cJSON *root)
     char downloaded_sha256[65] = {0};
     ota_progress_ctx_t progress = {0U};
 
-    s_ota_busy = 1U;
     app_debug_led_set_ota_active(1U);
     /* Use the modem HTTP(S) client so HTTPS requests follow the configured
      * SSL context. The older manual TCP path always opened port 80 and would
@@ -847,7 +863,6 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                                       ota_download_progress,
                                                       &progress);
     app_debug_led_set_ota_active(0U);
-    s_ota_busy = 0U;
 
     if (!download_ok) {
         const char *fail_reason = modem_http_download_last_error();
@@ -860,6 +875,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                           (int)progress.last_percent,
                                           target_version,
                                           fail_reason);
+        mqtt_ota_release_busy();
         return 1U;
     }
 
@@ -870,6 +886,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                                  target_version,
                                                  "downloaded_to_w25q");
     if (!ack_ok) {
+        mqtt_ota_release_busy();
         return 1U;
     }
 
@@ -880,6 +897,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                          target_version,
                                          downloaded_sha256);
     if (!ack_ok) {
+        mqtt_ota_release_busy();
         return 1U;
     }
 
@@ -894,6 +912,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                           100,
                                           target_version,
                                           "manifest_write_failed");
+        mqtt_ota_release_busy();
         return 1U;
     }
 
@@ -904,6 +923,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                          target_version,
                                          "bootloader_install_scheduled");
     if (!ack_ok) {
+        mqtt_ota_release_busy();
         return 1U;
     }
 
