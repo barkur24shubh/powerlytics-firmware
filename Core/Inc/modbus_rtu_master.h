@@ -70,3 +70,17 @@ HAL_StatusTypeDef mbm_read_input_04(mbm_t *m,
                                    uint16_t qty,
                                    uint32_t timeout_ms,
                                    uint16_t *out_regs);
+
+HAL_StatusTypeDef mbm_read_coils_01(mbm_t *m,
+                                   uint8_t slave_id,
+                                   uint16_t start_addr,
+                                   uint16_t qty,
+                                   uint32_t timeout_ms,
+                                   uint16_t *out_bits);
+
+HAL_StatusTypeDef mbm_read_discrete_inputs_02(mbm_t *m,
+                                             uint8_t slave_id,
+                                             uint16_t start_addr,
+                                             uint16_t qty,
+                                             uint32_t timeout_ms,
+                                             uint16_t *out_bits);

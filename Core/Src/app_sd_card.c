@@ -5,7 +5,7 @@
 #include "app_modbus_payload.h"
 #include "rtc_manager.h"
 #include "cJSON.h"
-#include "comm_manager.h"
+#include "connectivity.h"
 
 #include "stm32f4xx_hal.h"
 
@@ -890,7 +890,7 @@ void app_sd_telemetry_service(void)
 
     print("[SD_LOG] telemetry append %s mode=%s\r\n",
           ok ? "ok" : "failed",
-          comm_manager_is_online() ? "online" : "offline");
+          connectivity_is_online() ? "online" : "offline");
 
     s_next_due_tick = now + APP_SD_TELEMETRY_INTERVAL_MS;
     print("[SD_LOG] next telemetry log in %lu ms\r\n",

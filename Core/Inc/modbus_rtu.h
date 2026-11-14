@@ -1,14 +1,15 @@
 #ifndef MODBUS_RTU_H
 #define MODBUS_RTU_H
 
+#include "board_profile.h"
 #include "stm32f4xx_hal.h"   // adjust to your MCU family if needed
 #include <stdint.h>
 #include <stddef.h>
 
 // --------- User configuration ----------
 // Tie MAX485 RE and DE together to one MCU pin (active HIGH = transmit)
-#define MODBUS_DE_GPIO_Port   GPIOD
-#define MODBUS_DE_Pin         GPIO_PIN_10   // <- change if you wired a different pin
+#define MODBUS_DE_GPIO_Port   BOARD_MODBUS_DE_GPIO_PORT
+#define MODBUS_DE_Pin         BOARD_MODBUS_DE_GPIO_PIN
 
 // UART for Modbus (your huart1)
 extern UART_HandleTypeDef huart3;

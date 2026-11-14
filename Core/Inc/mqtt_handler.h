@@ -9,6 +9,7 @@
 uint8_t MQTT_Connect(const char *host, int port, const char *user, const char *pass);
 uint8_t MQTT_Subscribe(const char *topic);
 uint8_t MQTT_Publish(const char *topic, const char *payload);
+uint8_t MQTT_PublishPriority(const char *topic, const char *payload);
 char* MQTT_Subscriber_Run(void);
 void    handle_downlink_cjson(const char *payload);
 void    Prepare_MQTT_Topics(void);

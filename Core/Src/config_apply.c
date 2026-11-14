@@ -7,7 +7,6 @@
 static struct {
     uint8_t pending;
     char configId[64];
-    modbus_cfg_t cfg;
 } s_cfg;
 
 uint8_t cfg_stage_pending(const char *cfg_min_json,
@@ -15,9 +14,11 @@ uint8_t cfg_stage_pending(const char *cfg_min_json,
 {
     if (!cfg_min_json || !config_id) return 0;
 
+    modbus_cfg_t parsed;
+    memset(&parsed, 0, sizeof(parsed));
     memset(&s_cfg, 0, sizeof(s_cfg));
 
-    if (!modbus_cfg_from_json(cfg_min_json, &s_cfg.cfg)) {
+    if (!modbus_cfg_from_json(cfg_min_json, &parsed)) {
         return 0;
     }
 
@@ -33,7 +34,7 @@ uint8_t cfg_is_apply_pending(void)
 
 const modbus_cfg_t* cfg_get_pending(void)
 {
-    return s_cfg.pending ? &s_cfg.cfg : NULL;
+    return NULL;
 }
 
 const char* cfg_get_pending_config_id(void)

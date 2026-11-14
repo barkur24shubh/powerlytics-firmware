@@ -45,7 +45,7 @@
 #define MODEM_RESET_MIN_INTERVAL_MS        120000UL
 
 #define ENABLE_MODEM_SOFT_RESET            1
-#define RESET_MODEM_ON_COMM_STARTUP        1
+#define RESET_MODEM_ON_COMM_STARTUP        0
 #define TEST_FORCE_SOFT_RESET_ON_SIM_FAIL  0
 
 #define THRESHOLD_3X                       3U

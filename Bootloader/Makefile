@@ -12,8 +12,11 @@ CFLAGS += -DSTM32F407xx
 CFLAGS += -I../Drivers/CMSIS/Device/ST/STM32F4xx/Include
 CFLAGS += -I../Drivers/CMSIS/Include
 CFLAGS += -I../Core/Inc
+CFLAGS += -I../ThirdParty/monocypher
 CFLAGS += -IInc
 CFLAGS += -mthumb
+CFLAGS += -DOTA_SIGNING_PUBLIC_KEY_HEX=\"$(OTA_SIGNING_PUBLIC_KEY_HEX)\"
+CFLAGS += -DOTA_DEVICE_MODEL=\"$(POWERLYTICS_BOARD_SLUG)\"
 
 LDFLAGS = -mcpu=cortex-m4 -mthumb
 LDFLAGS += -TSTM32F407VETX_BOOTLOADER.ld
@@ -24,7 +27,10 @@ LDFLAGS += --specs=nano.specs --specs=nosys.specs
 OBJS = \
 	$(BUILD_DIR)/Startup/startup_stm32f407vetx_boot.o \
 	$(BUILD_DIR)/Src/bootloader.o \
-	$(BUILD_DIR)/Core/Src/sha256.o
+	$(BUILD_DIR)/Src/ota_signature.o \
+	$(BUILD_DIR)/Core/Src/sha256.o \
+	$(BUILD_DIR)/ThirdParty/monocypher/monocypher.o \
+	$(BUILD_DIR)/ThirdParty/monocypher/monocypher-ed25519.o
 
 all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).bin $(BUILD_DIR)/$(TARGET).hex
 	$(SIZE) $(BUILD_DIR)/$(TARGET).elf
@@ -41,6 +47,10 @@ $(BUILD_DIR)/%.o: %.s | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/Core/Src/%.o: ../Core/Src/%.c | $(BUILD_DIR)
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/ThirdParty/monocypher/%.o: ../ThirdParty/monocypher/%.c | $(BUILD_DIR)
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

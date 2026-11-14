@@ -101,12 +101,15 @@
 /* ---------- Config metadata ---------- */
 
 #define MODBUS_CFG_MAGIC     0x4D424346u   // 'MBCF'
-#define MODBUS_CFG_VERSION   2u            // bump because struct layout changed
+#define MODBUS_CFG_VERSION   4u            // full points[] contract plus per-point debounce
 
 /* ---------- Limits ---------- */
 
 #define MODBUS_MAX_SLAVES            4u
-#define MODBUS_MAX_READS_PER_SLAVE   16u
+#define MODBUS_MAX_READS_PER_SLAVE   6u
+#define POWERLYTICS_MAX_POINTS        24u
+#define POWERLYTICS_MAX_RULES_PER_POINT 2u
+#define POWERLYTICS_MAX_CONTEXT_KEYS  2u
 
 /* ---------- String sizes ---------- */
 
@@ -118,6 +121,9 @@
  */
 
 #define MODBUS_UUID_STR_LEN          37u
+#define POWERLYTICS_NAME_LEN          24u
+#define POWERLYTICS_TAG_LEN           16u
+#define POWERLYTICS_CONTEXT_KEY_LEN   24u
 
 #define MODBUS_DEVICE_ID_LEN         32u
 #define MODBUS_IMEI_LEN              24u
@@ -126,9 +132,15 @@
 #define MODBUS_HASH_LEN              80u
 #define MODBUS_API_KEY_LEN           160u
 
-#define MODBUS_DEFAULT_TELEMETRY_INTERVAL_S  1u
-#define MODBUS_MIN_TELEMETRY_INTERVAL_S      1u
-#define MODBUS_MAX_TELEMETRY_INTERVAL_S      3600u
+#define MODBUS_DEFAULT_TELEMETRY_INTERVAL_MS 60000UL
+#define MODBUS_MIN_TELEMETRY_INTERVAL_MS     1000UL
+#define MODBUS_MAX_TELEMETRY_INTERVAL_MS     3600000UL
+#define POWERLYTICS_DEFAULT_SAMPLE_INTERVAL_MS 50UL
+#define POWERLYTICS_MIN_SAMPLE_INTERVAL_MS     10UL
+#define POWERLYTICS_MAX_SAMPLE_INTERVAL_MS     10000UL
+#define POWERLYTICS_DEFAULT_DI_DEBOUNCE_MS      50UL
+#define POWERLYTICS_DEFAULT_EVENT_CAP          8U
+#define POWERLYTICS_MAX_EVENT_CAP              8U
 
 #define MODBUS_CFG_DEBUG_FLAG_VALID          0x80u
 #define MODBUS_CFG_DEBUG_FLAG_UART           0x01u
@@ -140,20 +152,130 @@ typedef enum {
   MB_FUNC_INPUT_04   = 4,
 } mb_func_t;
 
+typedef enum {
+  POWERLYTICS_POINT_DISABLED = 0,
+  POWERLYTICS_POINT_DIGITAL,
+  POWERLYTICS_POINT_COUNTER,
+  POWERLYTICS_POINT_ANALOG,
+  POWERLYTICS_POINT_RELAY,
+  POWERLYTICS_POINT_MODBUS,
+} powerlytics_point_kind_t;
+
+typedef enum {
+  POWERLYTICS_MODBUS_KIND_ANALOG = 0,
+  POWERLYTICS_MODBUS_KIND_DIGITAL,
+  POWERLYTICS_MODBUS_KIND_COUNTER,
+  POWERLYTICS_MODBUS_KIND_ENUM,
+  POWERLYTICS_MODBUS_KIND_RAW,
+} powerlytics_modbus_value_kind_t;
+
+typedef enum {
+  POWERLYTICS_RULE_NONE = 0,
+  POWERLYTICS_RULE_RISING_EDGE,
+  POWERLYTICS_RULE_FALLING_EDGE,
+  POWERLYTICS_RULE_THRESHOLD_HIGH,
+  POWERLYTICS_RULE_THRESHOLD_LOW,
+  POWERLYTICS_RULE_OUT_OF_RANGE,
+  POWERLYTICS_RULE_IN_RANGE,
+} powerlytics_rule_type_t;
+
+typedef enum {
+  POWERLYTICS_SEVERITY_INFO = 0,
+  POWERLYTICS_SEVERITY_WARNING,
+  POWERLYTICS_SEVERITY_CRITICAL,
+} powerlytics_severity_t;
+
+typedef enum {
+  POWERLYTICS_EDGE_RISING = 0,
+  POWERLYTICS_EDGE_FALLING,
+  POWERLYTICS_EDGE_BOTH,
+} powerlytics_edge_t;
+
+typedef enum {
+  POWERLYTICS_LATCH_NONE = 0,
+  POWERLYTICS_LATCH_UNTIL_NORMAL,
+  POWERLYTICS_LATCH_UNTIL_RESET,
+} powerlytics_latch_mode_t;
+
+typedef enum {
+  POWERLYTICS_DTYPE_UINT16 = 0,
+  POWERLYTICS_DTYPE_INT16,
+  POWERLYTICS_DTYPE_UINT32,
+  POWERLYTICS_DTYPE_INT32,
+  POWERLYTICS_DTYPE_FLOAT32,
+  POWERLYTICS_DTYPE_BOOL,
+  POWERLYTICS_DTYPE_BIT,
+  POWERLYTICS_DTYPE_BITFIELD,
+  POWERLYTICS_DTYPE_ENUM,
+  POWERLYTICS_DTYPE_RAW16,
+} powerlytics_data_type_t;
+
+typedef enum {
+  POWERLYTICS_ENDIAN_NONE = 0,
+  POWERLYTICS_ENDIAN_ABCD,
+  POWERLYTICS_ENDIAN_BADC,
+  POWERLYTICS_ENDIAN_CDAB,
+  POWERLYTICS_ENDIAN_DCBA,
+} powerlytics_endianness_t;
+
+typedef struct {
+  uint8_t  type;
+  uint8_t  enabled;
+  uint8_t  severity;
+  uint8_t  latch_mode;
+  uint32_t debounce_ms;
+  uint32_t duration_ms;
+  uint32_t recovery_duration_ms;
+  float    high;
+  float    low;
+  float    hysteresis;
+  uint8_t  context_count;
+  char     context_keys[POWERLYTICS_MAX_CONTEXT_KEYS][POWERLYTICS_CONTEXT_KEY_LEN];
+} powerlytics_rule_cfg_t;
+
+typedef struct {
+  char     key[16];
+  char     name[POWERLYTICS_NAME_LEN];
+  uint8_t  kind;
+  uint8_t  enabled;
+  uint8_t  edge;
+  uint8_t  active_high;
+  uint8_t  counter_width;
+  uint8_t  rule_count;
+  uint16_t reserved;
+  uint32_t debounce_ms;
+  uint32_t rollover_at;
+  float    scale;
+  float    offset;
+  char     unit[16];
+  powerlytics_rule_cfg_t rules[POWERLYTICS_MAX_RULES_PER_POINT];
+} powerlytics_point_cfg_t;
+
 /* ---------- One register read definition ---------- */
 
 typedef struct {
   char     read_id[MODBUS_UUID_STR_LEN];  // UUID string
+  char     name[POWERLYTICS_NAME_LEN];
+  char     tag[POWERLYTICS_TAG_LEN];
   uint8_t  func;                          // 3 or 4
   uint16_t start_reg;                     // start address
   uint8_t  qty;                           // number of 16-bit registers: 1 / 2 / 4
-  uint8_t  reserved0;
+  uint8_t  kind;
+  uint8_t  data_type;
+  uint8_t  endianness;
+  uint8_t  bit_index;
+  uint8_t  rule_count;
+  float    scale;
+  float    offset;
+  char     unit[16];
+  powerlytics_rule_cfg_t rules[POWERLYTICS_MAX_RULES_PER_POINT];
 } mb_read_item_t;
 
 /* ---------- One slave definition ---------- */
 
 typedef struct {
   char     unique_slave_id[MODBUS_UUID_STR_LEN]; // UUID string from config
+  char     name[POWERLYTICS_NAME_LEN];
   uint8_t  slave_id;                             // numeric Modbus address
 
   /*
@@ -191,7 +313,8 @@ typedef struct {
    */
   uint32_t magic;
   uint16_t version;
-  uint16_t length;
+  uint16_t reserved_header;
+  uint32_t length;
   uint32_t crc32;
 
   /*
@@ -215,17 +338,30 @@ typedef struct {
   char hash[MODBUS_HASH_LEN];
   char api_key[MODBUS_API_KEY_LEN];
 
+  uint8_t  protocol_version;
+  uint8_t  send_full_snapshot;
+  uint8_t  event_cap_per_interval;
+  uint8_t  point_count;
+  uint32_t telemetry_interval_ms;
+  uint32_t sample_interval_ms;
+
+  powerlytics_point_cfg_t points[POWERLYTICS_MAX_POINTS];
+
   /* Modbus slaves */
   uint8_t        slave_count;
   uint8_t        debug_flags;
-  uint16_t       telemetry_interval_s;
+  uint16_t       reserved_flags;
   mb_slave_cfg_t slaves[MODBUS_MAX_SLAVES];
 
 } modbus_cfg_t;
 
+#ifndef POWERLYTICS_UART_DEBUG_ENABLED
+#define POWERLYTICS_UART_DEBUG_ENABLED 1U
+#endif
+
 static inline uint8_t modbus_cfg_default_debug_print_enabled(void)
 {
-  return 1u;
+  return POWERLYTICS_UART_DEBUG_ENABLED ? 1U : 0U;
 }
 
 static inline void modbus_cfg_set_debug_print_enabled(modbus_cfg_t *cfg,
@@ -249,6 +385,9 @@ static inline uint8_t modbus_cfg_debug_print_enabled(const modbus_cfg_t *cfg)
 
 // Fill structure with safe defaults
 void modbus_cfg_defaults(modbus_cfg_t *cfg);
+
+// Shared large config workspace used for boot/downlink parse-load-save flows.
+modbus_cfg_t *modbus_cfg_workspace(void);
 
 // Load config from FLASH. Returns false if invalid, CRC mismatch, or version mismatch.
 bool modbus_cfg_load(modbus_cfg_t *out);

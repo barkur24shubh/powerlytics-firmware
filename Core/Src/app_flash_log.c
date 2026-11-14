@@ -4,13 +4,13 @@
 #include "stm32f4xx_hal.h"
 
 #include "debug_uart.h"
-#include "mqtt_handler.h"
+#include "connectivity.h"
 #include "rtc_manager.h"
-#include "comm_manager.h"
 #include "app_modbus_payload.h"
 #include "app_health.h"
 #include "app_sd_card.h"
 #include "app_firmware.h"
+#include "app_board_io.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -640,11 +640,11 @@ uint8_t app_flash_log_write_incident(app_log_level_t level,
 
     safe_copy(r.comm_state,
               sizeof(r.comm_state),
-              comm_manager_state_name(comm_manager_get_state()));
+              connectivity_state_name(connectivity_get_state()));
 
     safe_copy(r.last_error,
               sizeof(r.last_error),
-              comm_manager_error_name(comm_manager_get_last_error()));
+              connectivity_error_name(connectivity_get_last_error()));
 
     safe_copy(r.config_id,
               sizeof(r.config_id),
@@ -748,7 +748,7 @@ uint8_t app_flash_log_upload_one(void)
         return 0U;
     }
 
-    if (!comm_manager_is_online()) {
+    if (!connectivity_is_online()) {
         print("[FLOG_UPLOAD] comm not online\r\n");
         return 0U;
     }
@@ -792,6 +792,12 @@ uint8_t app_flash_log_upload_one(void)
     const char *gprs_status;
     const char *mqtt_status;
     const char *sd_status = app_sd_is_available() ? "mounted" : "not_mounted";
+    uint16_t power_raw = 0U;
+    uint32_t power_sense_mv = 0U;
+    uint32_t power_supply_mv = 0U;
+    uint8_t power_valid = app_power_monitor_get(&power_raw,
+                                                 &power_sense_mv,
+                                                 &power_supply_mv);
 
     json_escape(msg, sizeof(msg), r.message);
     json_escape(module, sizeof(module), r.module);
@@ -842,9 +848,15 @@ uint8_t app_flash_log_upload_one(void)
              "\"msg\":\"%s\","
              "\"cnt\":%ld,"
              "\"stage\":\"%s\","
-             "\"action\":\"%s\","
-             "\"signal\":\"%s\","
-             "\"mod\":{"
+             "\"action\":\"%s\"," 
+             "\"signal\":\"%s\"," 
+             "\"power\":{" 
+                "\"valid\":%s,"
+                "\"raw\":%u,"
+                "\"senseMv\":%lu,"
+                "\"supplyMv\":%lu"
+             "},"
+             "\"mod\":{" 
                 "\"sim\":\"%s\","
                 "\"net\":\"%s\","
                 "\"gprs\":\"%s\","
@@ -874,6 +886,10 @@ uint8_t app_flash_log_upload_one(void)
              stage,
              recovery,
              signal,
+             power_valid ? "true" : "false",
+             (unsigned int)power_raw,
+             (unsigned long)power_sense_mv,
+             (unsigned long)power_supply_mv,
              sim_status,
              net_status,
              gprs_status,
@@ -891,7 +907,7 @@ uint8_t app_flash_log_upload_one(void)
 
     print("[FLOG_UPLOAD] before MQTT publish\r\n");
 
-    uint8_t ok = MQTT_Publish(topic_d2c_logs, json);
+    uint8_t ok = connectivity_publish(topic_d2c_logs, json);
 
     print("[FLOG_UPLOAD] after MQTT publish ok=%u\r\n", ok);
 

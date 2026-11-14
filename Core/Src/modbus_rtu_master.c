@@ -252,3 +252,76 @@ HAL_StatusTypeDef mbm_read_input_04(mbm_t *m,
 
   return HAL_OK;
 }
+
+static HAL_StatusTypeDef mbm_read_bits(mbm_t *m,
+                                       uint8_t expected_fc,
+                                       uint8_t slave_id,
+                                       uint16_t start_addr,
+                                       uint16_t qty,
+                                       uint32_t timeout_ms,
+                                       uint16_t *out_bits)
+{
+  if (qty < 1 || qty > 2000 || !out_bits) return HAL_ERROR;
+
+  uint8_t req[8];
+  req[0] = slave_id;
+  req[1] = expected_fc;
+  req[2] = (uint8_t)(start_addr >> 8);
+  req[3] = (uint8_t)(start_addr & 0xFF);
+  req[4] = (uint8_t)(qty >> 8);
+  req[5] = (uint8_t)(qty & 0xFF);
+
+  uint16_t crc = mb_crc16(req, 6);
+  req[6] = (uint8_t)(crc & 0xFF);
+  req[7] = (uint8_t)(crc >> 8);
+
+  if (mbm_arm_rx_to_idle(m) != HAL_OK) return HAL_ERROR;
+  if (mbm_tx_frame(m, req, sizeof(req)) != HAL_OK) return HAL_ERROR;
+  if (osSemaphoreAcquire(m->rx_sem, timeout_ms) != osOK) return HAL_TIMEOUT;
+
+  uint16_t n = m->rx_len;
+  if (n < 5) return HAL_ERROR;
+  if (m->rx_buf[0] != slave_id) return HAL_ERROR;
+
+  uint8_t fc = m->rx_buf[1];
+  if (fc & 0x80) return HAL_ERROR;
+  if (fc != expected_fc) return HAL_ERROR;
+
+  uint8_t bc = m->rx_buf[2];
+  uint16_t frame_len = (uint16_t)(3 + bc + 2);
+  if (n < frame_len) return HAL_ERROR;
+
+  uint16_t rx_crc = (uint16_t)m->rx_buf[frame_len - 2] | ((uint16_t)m->rx_buf[frame_len - 1] << 8);
+  uint16_t calc = mb_crc16(m->rx_buf, frame_len - 2);
+  if (rx_crc != calc) return HAL_ERROR;
+
+  uint16_t expected_bytes = (uint16_t)((qty + 7U) / 8U);
+  if (bc != expected_bytes) return HAL_ERROR;
+
+  for (uint16_t i = 0; i < qty; i++) {
+    uint8_t byte = m->rx_buf[3U + (i / 8U)];
+    out_bits[i] = (byte & (uint8_t)(1U << (i % 8U))) ? 1U : 0U;
+  }
+
+  return HAL_OK;
+}
+
+HAL_StatusTypeDef mbm_read_coils_01(mbm_t *m,
+                                   uint8_t slave_id,
+                                   uint16_t start_addr,
+                                   uint16_t qty,
+                                   uint32_t timeout_ms,
+                                   uint16_t *out_bits)
+{
+  return mbm_read_bits(m, 0x01U, slave_id, start_addr, qty, timeout_ms, out_bits);
+}
+
+HAL_StatusTypeDef mbm_read_discrete_inputs_02(mbm_t *m,
+                                             uint8_t slave_id,
+                                             uint16_t start_addr,
+                                             uint16_t qty,
+                                             uint32_t timeout_ms,
+                                             uint16_t *out_bits)
+{
+  return mbm_read_bits(m, 0x02U, slave_id, start_addr, qty, timeout_ms, out_bits);
+}

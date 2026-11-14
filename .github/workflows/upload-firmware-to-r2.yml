@@ -1,0 +1,265 @@
+name: Upload firmware to private R2 (staged)
+
+on:
+  workflow_dispatch:
+    inputs:
+      firmware_version:
+        description: Version embedded in the selected board artifact
+        required: true
+        type: string
+      device_model_id:
+        description: DeviceModel MongoDB ID registered in Powerlytics
+        required: true
+        type: string
+      board_slug:
+        description: Board build variant
+        required: true
+        type: choice
+        options:
+          - b1-v4-c
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-release-${{ inputs.device_model_id }}-${{ inputs.firmware_version }}
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    name: Upload immutable app image and register as staged
+    runs-on: ubuntu-latest
+    environment: firmware-release
+    env:
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: "true"
+      OTA_SIGNING_PUBLIC_KEY_HEX: ${{ vars.OTA_SIGNING_PUBLIC_KEY_HEX }}
+      FIRMWARE_VERSION: ${{ inputs.firmware_version }}
+      DEVICE_MODEL_ID: ${{ inputs.device_model_id }}
+      BOARD_SLUG: ${{ inputs.board_slug }}
+
+    steps:
+      - name: Checkout firmware repository
+        uses: actions/checkout@v4
+
+      - name: Install ARM firmware toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v arm-none-eabi-gcc >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
+          fi
+
+      - name: Verify the device/backend Ed25519 message contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          host_test="$(mktemp)"
+          trap 'rm -f "${host_test}"' EXIT
+          cc -std=c11 -O2 -Wall -Wextra \
+            -IThirdParty/monocypher -IBootloader/Inc \
+            scripts/ota_signature_host_test.c \
+            Bootloader/Src/ota_signature.c \
+            ThirdParty/monocypher/monocypher.c \
+            ThirdParty/monocypher/monocypher-ed25519.c \
+            -o "${host_test}"
+          node scripts/test_ota_signature.mjs "${host_test}"
+
+      - name: Derive and check the firmware signing public key
+        id: signing
+        shell: bash
+        env:
+          OTA_SIGNING_PRIVATE_KEY_PEM: ${{ secrets.OTA_SIGNING_PRIVATE_KEY_PEM }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${OTA_SIGNING_PRIVATE_KEY_PEM:-}" || ! "${OTA_SIGNING_PUBLIC_KEY_HEX:-}" =~ ^[a-fA-F0-9]{64}$ ]]; then
+            echo "::error::Configure OTA_SIGNING_PRIVATE_KEY_PEM (secret) and OTA_SIGNING_PUBLIC_KEY_HEX (repository variable)"
+            exit 1
+          fi
+          key_file="$(mktemp)"
+          chmod 600 "${key_file}"
+          trap 'rm -f "${key_file}"' EXIT
+          printf '%s\n' "${OTA_SIGNING_PRIVATE_KEY_PEM}" > "${key_file}"
+          derived_key="$(openssl pkey -in "${key_file}" -pubout -outform DER | tail -c 32 | xxd -p -c 32)"
+          if [[ "${derived_key,,}" != "${OTA_SIGNING_PUBLIC_KEY_HEX,,}" ]]; then
+            echo "::error::The configured OTA public key does not match the signing private key"
+            exit 1
+          fi
+          echo "public_key_hex=${derived_key,,}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build selected board from this commit
+        shell: bash
+        env:
+          TOOLBIN: /usr/bin
+          OBJCOPY: /usr/bin/arm-none-eabi-objcopy
+          OTA_SIGNING_PUBLIC_KEY_HEX: ${{ steps.signing.outputs.public_key_hex }}
+        run: ./scripts/build_board.sh "${{ inputs.board_slug }}"
+
+      - name: Validate release inputs and artifact
+        id: release
+        shell: bash
+        env:
+          OTA_SIGNING_PRIVATE_KEY_PEM: ${{ secrets.OTA_SIGNING_PRIVATE_KEY_PEM }}
+        run: |
+          set -euo pipefail
+
+          required=(DEVICE_MODEL_ID FIRMWARE_VERSION OTA_SIGNING_PRIVATE_KEY_PEM OTA_SIGNING_PUBLIC_KEY_HEX BOARD_SLUG)
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing GitHub Actions secret or input: ${name}"
+              exit 1
+            fi
+          done
+
+          if [[ ! "${DEVICE_MODEL_ID}" =~ ^[a-fA-F0-9]{24}$ ]]; then
+            echo "::error::device_model_id must be a MongoDB ObjectId"
+            exit 1
+          fi
+          if [[ ! "${FIRMWARE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.-]+)?$ ]]; then
+            echo "::error::firmware_version must be semantic-version shaped"
+            exit 1
+          fi
+          if [[ ${#FIRMWARE_VERSION} -gt 31 ]]; then
+            echo "::error::firmware_version must fit the device manifest's 31-character field"
+            exit 1
+          fi
+
+          artifact_dir="artifacts/boards/${BOARD_SLUG}"
+          app="${artifact_dir}/BALCKPILL_BASED_GENERIC_GATEWAY.bin"
+          board_manifest="${artifact_dir}/manifest.json"
+          if [[ ! -f "${app}" || ! -f "${board_manifest}" ]]; then
+            echo "::error::Missing board app image or manifest in ${artifact_dir}"
+            exit 1
+          fi
+
+          manifest_board="$(jq -r '.boardSlug' "${board_manifest}")"
+          manifest_version="$(jq -r '.firmwareVersion' "${board_manifest}")"
+          if [[ "${manifest_board}" != "${BOARD_SLUG}" || "${manifest_version}" != "${FIRMWARE_VERSION}" ]]; then
+            echo "::error::Selected board/version does not match the committed board manifest"
+            exit 1
+          fi
+          if ! grep -a -F -q "${FIRMWARE_VERSION}" "${app}"; then
+            echo "::error::Firmware image does not contain version ${FIRMWARE_VERSION}"
+            exit 1
+          fi
+
+          size_bytes="$(stat -c%s "${app}")"
+          sha256="$(sha256sum "${app}" | awk '{print $1}')"
+          signature_message="$(mktemp)"
+          signature_file="$(mktemp)"
+          signing_key_file="$(mktemp)"
+          chmod 600 "${signing_key_file}"
+          trap 'rm -f "${signature_message}" "${signature_file}" "${signing_key_file}"' EXIT
+          printf '%s\n' "${OTA_SIGNING_PRIVATE_KEY_PEM}" > "${signing_key_file}"
+          printf 'Powerlytics OTA v1\n%s\n%s\n%s\n%s\n' "${BOARD_SLUG}" "${FIRMWARE_VERSION}" "${size_bytes}" "${sha256}" > "${signature_message}"
+          openssl pkeyutl -sign -rawin -inkey "${signing_key_file}" -in "${signature_message}" -out "${signature_file}"
+          signature_ed25519="$(xxd -p -c 256 "${signature_file}")"
+          object_key="firmware/${DEVICE_MODEL_ID}/${FIRMWARE_VERSION}/firmware.bin"
+          echo "app=${app}" >> "${GITHUB_OUTPUT}"
+          echo "size_bytes=${size_bytes}" >> "${GITHUB_OUTPUT}"
+          echo "sha256=${sha256}" >> "${GITHUB_OUTPUT}"
+          echo "signature_ed25519=${signature_ed25519}" >> "${GITHUB_OUTPUT}"
+          echo "object_key=${object_key}" >> "${GITHUB_OUTPUT}"
+
+      - name: Refuse to overwrite an existing release object
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ACCOUNT_ID R2_BUCKET; do
+            if [[ -z "${!name:-}" ]]; then echo "::error::Missing R2 GitHub Actions secret: ${name}"; exit 1; fi
+          done
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          if error="$(aws s3api head-object --bucket "${R2_BUCKET}" --key "${{ steps.release.outputs.object_key }}" --endpoint-url "${endpoint}" 2>&1)"; then
+            echo "::error::This immutable firmware version already exists in R2; publish a new version instead"
+            exit 1
+          elif ! grep -Eq '404|Not Found|NoSuchKey' <<<"${error}"; then
+            echo "::error::Could not verify whether this firmware version already exists in R2"
+            echo "${error}"
+            exit 1
+          fi
+
+      - name: Upload app image and release metadata to private R2
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ACCOUNT_ID R2_BUCKET; do
+            if [[ -z "${!name:-}" ]]; then echo "::error::Missing R2 GitHub Actions secret: ${name}"; exit 1; fi
+          done
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          object_key="${{ steps.release.outputs.object_key }}"
+          release_dir="$(dirname "${object_key}")"
+          manifest="$(mktemp)"
+          jq -n \
+            --arg version "${FIRMWARE_VERSION}" \
+            --arg board "${BOARD_SLUG}" \
+            --arg modelId "${DEVICE_MODEL_ID}" \
+            --arg commit "${GITHUB_SHA}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg sha256 "${{ steps.release.outputs.sha256 }}" \
+            --arg signature "${{ steps.release.outputs.signature_ed25519 }}" \
+            --argjson sizeBytes "${{ steps.release.outputs.size_bytes }}" \
+            '{schemaVersion:1,releaseState:"STAGED",deviceModelId:$modelId,boardSlug:$board,firmwareVersion:$version,sourceCommitSha:$commit,sourceRepo:$repository,checksumSha256:$sha256,sizeBytes:$sizeBytes,signatureAlgorithm:"Ed25519",signatureEd25519:$signature}' \
+            > "${manifest}"
+
+          aws s3 cp "${{ steps.release.outputs.app }}" "s3://${R2_BUCKET}/${object_key}" \
+            --endpoint-url "${endpoint}" --no-progress --content-type application/octet-stream --cache-control "private, no-store"
+          aws s3 cp "${manifest}" "s3://${R2_BUCKET}/${release_dir}/manifest.json" \
+            --endpoint-url "${endpoint}" --no-progress --content-type application/json --cache-control "private, no-store"
+
+          remote_size="$(aws s3api head-object --bucket "${R2_BUCKET}" --key "${object_key}" --endpoint-url "${endpoint}" --query ContentLength --output text)"
+          if [[ "${remote_size}" != "${{ steps.release.outputs.size_bytes }}" ]]; then
+            echo "::error::Uploaded object size differs from the validated local image"
+            exit 1
+          fi
+
+      - name: Publish private bootloader handoff artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: powerlytics-${{ inputs.board_slug }}-ota-bootstrap-${{ inputs.firmware_version }}
+          path: |
+            artifacts/boards/${{ inputs.board_slug }}/powerlytics_bootloader.bin
+            artifacts/boards/${{ inputs.board_slug }}/powerlytics_bootloader.hex
+            artifacts/boards/${{ inputs.board_slug }}/powerlytics_bootloader.elf
+            artifacts/boards/${{ inputs.board_slug }}/manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Register staged release with Powerlytics API
+        shell: bash
+        env:
+          BACKEND_API_URL: ${{ secrets.BACKEND_API_URL }}
+          FIRMWARE_WEBHOOK_API_KEY: ${{ secrets.FIRMWARE_WEBHOOK_API_KEY }}
+        run: |
+          set -euo pipefail
+          for name in BACKEND_API_URL FIRMWARE_WEBHOOK_API_KEY; do
+            if [[ -z "${!name:-}" ]]; then echo "::error::Missing GitHub Actions secret: ${name}"; exit 1; fi
+          done
+          payload="$(jq -n \
+            --arg deviceModelId "${DEVICE_MODEL_ID}" \
+            --arg deviceModel "${BOARD_SLUG}" \
+            --arg version "${FIRMWARE_VERSION}" \
+            --arg checksumSha256 "${{ steps.release.outputs.sha256 }}" \
+            --arg signatureEd25519 "${{ steps.release.outputs.signature_ed25519 }}" \
+            --arg sourceCommitSha "${GITHUB_SHA}" \
+            --arg sourceRepo "${GITHUB_REPOSITORY}" \
+            --argjson sizeBytes "${{ steps.release.outputs.size_bytes }}" \
+            '{deviceModelId:$deviceModelId,deviceModel:$deviceModel,version:$version,checksumSha256:$checksumSha256,signatureEd25519:$signatureEd25519,sizeBytes:$sizeBytes,sourceCommitSha:$sourceCommitSha,sourceRepo:$sourceRepo}')"
+
+          curl --fail-with-body --silent --show-error \
+            -X POST "${BACKEND_API_URL%/}/firmware/webhook/publish" \
+            -H "x-api-key: ${FIRMWARE_WEBHOOK_API_KEY}" \
+            -H "Content-Type: application/json" \
+            --data "${payload}" >/dev/null
+
+          echo "Signed image uploaded to private R2 and registered as STAGED. A compatible bootloader still requires supervised installation and bench validation before activation."

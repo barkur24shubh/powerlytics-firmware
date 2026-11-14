@@ -6,8 +6,7 @@
 #include "main.h"
 #include "debug_uart.h"
 
-#include "mqtt_handler.h"
-#include "comm_manager.h"
+#include "connectivity.h"
 #include "app_modbus_payload.h"
 #include "app_log.h"
 #include "app_flash_log.h"
@@ -15,9 +14,18 @@
 #include "app_debug_led.h"
 #include "app_watchdog.h"
 #include "app_sd_card.h"
+#include "app_firmware.h"
+#include "modem_handler.h"
+#include "app_gateway_platform.h"
 
+#include <stdio.h>
 #include <string.h>
 
+#ifndef BOARD_TELEMETRY_TEST_INTERVAL_MS
+#define BOARD_TELEMETRY_TEST_INTERVAL_MS 0U
+#endif
+
+extern char topic_d2c_event[64];
 extern char topic_d2c_message[64];
 extern osThreadId_t defaultTaskHandle;
 extern osThreadId_t ModbusTaskHandle;
@@ -34,17 +42,97 @@ static uint8_t device_can_publish_cloud(void)
     return app_modbus_payload_has_valid_config();
 }
 
+#define OFFLINE_DIAG_INTERVAL_MS 5000UL
+
+static uint8_t publish_event_once(void);
+
+extern uint32_t app_boot_count;
+extern char app_boot_id[48];
+extern char app_reset_reason[40];
+
+static uint8_t publish_hello_once(void)
+{
+    static uint8_t sent = 0U;
+    static char payload[1200];
+    if (sent || !connectivity_is_online()) return sent;
+
+    int idx = snprintf(payload, sizeof(payload),
+        "{\"type\":\"hello\",\"v\":1,\"model\":\"%s\",\"hw\":\"%s\","
+        "\"fw\":{\"version\":\"%s\",\"build\":\"%s\"},\"connectivity\":\"CELLULAR\","
+        "\"channels\":{\"AI\":[",
+        APP_DEVICE_MODEL, BOARD_HW_REVISION, APP_FIRMWARE_VERSION, APP_FIRMWARE_BUILD);
+    if (idx < 0 || idx >= (int)sizeof(payload)) return 0U;
+#define APPEND_CHANNELS(prefix, count) do { \
+    for (uint8_t ci = 0U; ci < (count); ci++) { \
+        idx += snprintf(payload + idx, sizeof(payload) - (size_t)idx, "%s\"%s%u\"", ci ? "," : "", prefix, (unsigned)(ci + 1U)); \
+        if (idx < 0 || idx >= (int)sizeof(payload)) return 0U; \
+    } \
+} while (0)
+    APPEND_CHANNELS("AI_", BOARD_AI_COUNT);
+    idx += snprintf(payload + idx, sizeof(payload) - (size_t)idx, "],\"DI\":[");
+#ifndef BOARD_COUNTER_COUNT
+#define BOARD_COUNTER_COUNT 0U
+#endif
+    APPEND_CHANNELS("DI_", BOARD_DI_COUNT + BOARD_COUNTER_COUNT);
+    idx += snprintf(payload + idx, sizeof(payload) - (size_t)idx, "],\"RO\":[");
+    APPEND_CHANNELS("RO_", BOARD_RELAY_COUNT);
+    idx += snprintf(payload + idx, sizeof(payload) - (size_t)idx, "]");
+#ifdef BOARD_MODBUS_UART_INSTANCE
+    idx += snprintf(payload + idx, sizeof(payload) - (size_t)idx, ",\"MI\":[\"MI_1\"]");
+#endif
+    idx += snprintf(payload + idx, sizeof(payload) - (size_t)idx, "},\"bootId\":\"%s\",\"bootCount\":%lu,\"resetReason\":\"%s\",\"uptimeMs\":%lu}",
+        app_boot_id, (unsigned long)app_boot_count, app_reset_reason, (unsigned long)HAL_GetTick());
+#undef APPEND_CHANNELS
+    if (idx < 0 || idx >= (int)sizeof(payload)) return 0U;
+    if (connectivity_publish_priority(topic_d2c_message, payload)) {
+        sent = 1U;
+        print("[HELLO] identity published bootId=%s\r\n", app_boot_id);
+    }
+    return sent;
+}
+
+static void print_telemetry_payload(const char *payload)
+{
+    const size_t chunk_size = 480U;
+    size_t length;
+    size_t offset = 0U;
+
+    if (!payload) return;
+
+    length = strlen(payload);
+
+    /* Most payloads fit in debug_uart's 1 KB formatting buffer. Emit those in
+     * one USB transfer so the JSON cannot be split or dropped between writes. */
+    if (length <= 900U)
+    {
+        print("[TELEMETRY_JSON] %s\r\n", payload);
+        return;
+    }
+
+    print("[TELEMETRY_JSON_BEGIN] len=%lu\r\n", (unsigned long)length);
+    osDelay(50U);
+    while (offset < length)
+    {
+        size_t remaining = length - offset;
+        size_t count = (remaining > chunk_size) ? chunk_size : remaining;
+        print("%.*s", (int)count, &payload[offset]);
+        offset += count;
+        osDelay(50U);
+    }
+    print("\r\n[TELEMETRY_JSON_END]\r\n");
+}
+
 static uint8_t process_downlink_once(const char *tag)
 {
-    char *rx = MQTT_Subscriber_Run();
+    char *rx = connectivity_read_downlink();
 
     if (rx && rx[0])
     {
         print("[%s] downlink received len=%lu\r\n",
               tag,
               (unsigned long)strlen(rx));
-        handle_downlink_cjson(rx);
         app_debug_led_event(DEBUG_LED_EVENT_DOWNLINK);
+        connectivity_handle_downlink(rx);
         return 1U;
     }
 
@@ -66,6 +154,8 @@ static uint8_t wait_for_downlink_window(uint32_t window_ms)
             return 1U;
         }
 
+        (void)publish_event_once();
+
         osDelay(DOWNLINK_POLL_STEP_MS);
     }
 
@@ -84,18 +174,19 @@ static telemetry_result_t publish_telemetry_once(void)
 
     if (payload && payload[0])
     {
-        uint8_t ok = mqttPublish(payload);
+        print_telemetry_payload(payload);
+        uint8_t ok = connectivity_publish_telemetry(payload);
 
-        if (ok || MQTT_LastPublishAttempted())
+        if (ok || connectivity_last_publish_attempted())
         {
-            comm_manager_report_publish_result(ok);
+            connectivity_report_publish_result(ok);
         }
         else
         {
             print("[RUNTIME] telemetry publish skipped stage=%s\r\n",
-                  MQTT_LastPublishStage());
+                  connectivity_last_publish_stage());
 
-            if (strcmp(MQTT_LastPublishStage(), "COOLDOWN") == 0)
+            if (strcmp(connectivity_last_publish_stage(), "COOLDOWN") == 0)
             {
                 return TELEMETRY_RESULT_FAILED;
             }
@@ -118,9 +209,40 @@ static telemetry_result_t publish_telemetry_once(void)
     return TELEMETRY_RESULT_SKIPPED;
 }
 
+static uint8_t publish_event_once(void)
+{
+    static char event_payload[1024];
+
+    if (!device_can_publish_cloud())
+    {
+        return 0U;
+    }
+
+    if (!app_modbus_payload_pop_event(event_payload, sizeof(event_payload)))
+    {
+        return 0U;
+    }
+
+    uint8_t ok = connectivity_publish_priority(topic_d2c_event, event_payload);
+    connectivity_report_publish_result(ok);
+
+    if (ok)
+    {
+        print("[EVENT] published len=%lu\r\n", (unsigned long)strlen(event_payload));
+        app_debug_led_event(DEBUG_LED_EVENT_UPLINK);
+    }
+    else
+    {
+        print("[EVENT][ERR] publish failed stage=%s\r\n", connectivity_last_publish_stage());
+        app_debug_led_event(DEBUG_LED_EVENT_ERROR_ON);
+    }
+
+    return ok;
+}
+
 static uint8_t handle_disconnect_urc_once(void)
 {
-    if (!MQTT_CheckDisconnectURC())
+    if (!connectivity_check_disconnect_urc())
     {
         return 0U;
     }
@@ -133,7 +255,7 @@ static uint8_t handle_disconnect_urc_once(void)
                      0,
                      "MQTT_RECONNECT");
 
-    comm_manager_report_mqtt_disconnected();
+    connectivity_report_disconnected();
     return 1U;
 }
 
@@ -272,12 +394,12 @@ static void app_gateway_online_idle_for(uint32_t wait_ms)
             return;
         }
 
-        if (!comm_manager_is_online())
+        if (!connectivity_is_online())
         {
             return;
         }
 
-        if (MQTT_OtaIsBusy())
+        if (connectivity_ota_is_busy())
         {
             osDelay(100U);
             continue;
@@ -294,25 +416,30 @@ static void app_gateway_online_idle_for(uint32_t wait_ms)
             return;
         }
 
+        if (publish_event_once())
+        {
+            continue;
+        }
+
         (void)app_health_signal_poll_due();
         app_memory_monitor_once();
         app_sd_telemetry_service();
         app_sd_terminal_log_service();
 
         uint8_t keepalive_attempted = 0U;
-        uint8_t keepalive_ok = MQTT_Maintain(ONLINE_IDLE_MQTT_KEEPALIVE_MS,
-                                             topic_d2c_message,
-                                             "{\"type\":\"keepalive\"}",
-                                             &keepalive_attempted);
+        uint8_t keepalive_ok = connectivity_maintain(ONLINE_IDLE_MQTT_KEEPALIVE_MS,
+                                                     topic_d2c_message,
+                                                     "{\"type\":\"keepalive\"}",
+                                                     &keepalive_attempted);
 
         if (keepalive_attempted)
         {
-            comm_manager_report_publish_result(keepalive_ok);
+            connectivity_report_publish_result(keepalive_ok);
 
             if (!keepalive_ok)
             {
                 print("[RUNTIME] keepalive failed stage=%s\r\n",
-                      MQTT_LastPublishStage());
+                      connectivity_last_publish_stage());
                 app_debug_led_event(DEBUG_LED_EVENT_ERROR_ON);
                 osDelay(DISCONNECT_RETRY_DELAY_MS);
                 return;
@@ -328,6 +455,7 @@ static void app_gateway_online_idle_for(uint32_t wait_ms)
 void app_gateway_runtime_task(void *argument)
 {
     (void)argument;
+    uint32_t last_offline_diag_tick = 0U;
 
     app_watchdog_mark_task(APP_WATCHDOG_TASK_RUNTIME);
     osDelay(5000);
@@ -337,7 +465,8 @@ void app_gateway_runtime_task(void *argument)
 
     app_log_init();
     app_health_init();
-    comm_manager_init();
+    connectivity_init();
+    print("[CONNECTIVITY] backend=%s\r\n", connectivity_backend_name());
 
     for (;;)
     {
@@ -345,9 +474,9 @@ void app_gateway_runtime_task(void *argument)
         app_debug_led_run_once();
         app_watchdog_refresh();
 
-        comm_manager_run_once();
+        connectivity_run_once();
 
-        if (MQTT_OtaIsBusy())
+        if (connectivity_ota_is_busy())
         {
             osDelay(100U);
             continue;
@@ -357,7 +486,7 @@ void app_gateway_runtime_task(void *argument)
         app_sd_telemetry_service();
         app_sd_terminal_log_service();
 
-        if (!comm_manager_is_online())
+        if (!connectivity_is_online())
         {
             app_debug_led_event(DEBUG_LED_EVENT_ERROR_ON);
 
@@ -371,23 +500,33 @@ void app_gateway_runtime_task(void *argument)
                 app_log_critical_persist_deferred_once();
             }
 
-            print("[OFFLINE] flash pending=%u total=%u dropped=%lu deduped=%lu\r\n",
-                  app_flash_log_pending_count(),
-                  app_flash_log_total_count(),
-                  (unsigned long)app_flash_log_dropped_count(),
-                  (unsigned long)app_flash_log_deduped_count());
+            uint32_t now = HAL_GetTick();
+            if ((last_offline_diag_tick == 0U) ||
+                ((now - last_offline_diag_tick) >= OFFLINE_DIAG_INTERVAL_MS))
+            {
+                last_offline_diag_tick = now;
+                print("[OFFLINE] state=%s error=%s flash pending=%u total=%u dropped=%lu deduped=%lu\r\n",
+                      connectivity_state_name(connectivity_get_state()),
+                      connectivity_error_name(connectivity_get_last_error()),
+                      app_flash_log_pending_count(),
+                      app_flash_log_total_count(),
+                      (unsigned long)app_flash_log_dropped_count(),
+                      (unsigned long)app_flash_log_deduped_count());
+            }
 
             osDelay(OFFLINE_LOOP_DELAY_MS);
             continue;
         }
 
         app_debug_led_event(DEBUG_LED_EVENT_ERROR_OFF);
+        last_offline_diag_tick = 0U;
 
         /*
          * If the bootloader has just installed an OTA image, report that only
          * after MQTT is online. The manifest is cleared only after publish ACK.
          */
-        (void)MQTT_ReportOtaBootResultOnce();
+        (void)connectivity_report_ota_boot_result_once();
+        (void)publish_hello_once();
 
         /*
          * Priority 1: downlink/config/command always wins.
@@ -408,14 +547,26 @@ void app_gateway_runtime_task(void *argument)
         }
 
         /*
-         * Priority 3: telemetry is main path.
+         * Priority 3: critical events beat normal telemetry.
+         */
+        if (publish_event_once())
+        {
+            if (wait_for_downlink_window(DOWNLINK_AFTER_PUB_WINDOW_MS))
+            {
+                osDelay(DOWNLINK_HANDLED_DELAY_MS);
+                continue;
+            }
+        }
+
+        /*
+         * Priority 4: telemetry is main path.
          */
         (void)app_health_signal_poll_due();
         app_memory_monitor_once();
         telemetry_result_t telemetry_result = publish_telemetry_once();
 
         /*
-         * Priority 4: after telemetry, wait briefly for downlink/config.
+         * Priority 5: after telemetry, wait briefly for downlink/config.
          */
         if (wait_for_downlink_window(DOWNLINK_AFTER_PUB_WINDOW_MS))
         {
@@ -424,7 +575,7 @@ void app_gateway_runtime_task(void *argument)
         }
 
         /*
-         * Priority 5: persist one deferred critical log into W25Q.
+         * Priority 6: persist one deferred critical log into W25Q.
          */
         if (device_can_publish_cloud())
         {
@@ -432,7 +583,7 @@ void app_gateway_runtime_task(void *argument)
         }
 
         /*
-         * Priority 6: upload one flash log if due.
+         * Priority 7: upload one flash log if due.
          */
 #if ENABLE_FLASH_LOG_UPLOAD
         if (device_can_publish_cloud())
@@ -442,10 +593,10 @@ void app_gateway_runtime_task(void *argument)
 #endif
 
         /*
-         * Priority 7: health is best-effort.
+         * Priority 8: health is best-effort.
          * Keep disabled if it competes with telemetry.
          */
-        // app_health_run_once();
+        app_health_run_once();
 
         print("[FLASH_LOG] pending=%u total=%u dropped=%lu deduped=%lu\r\n",
               app_flash_log_pending_count(),
@@ -454,6 +605,10 @@ void app_gateway_runtime_task(void *argument)
               (unsigned long)app_flash_log_deduped_count());
 
         uint32_t next_uplink_ms = app_modbus_payload_get_telemetry_interval_ms();
+
+#if BOARD_TELEMETRY_TEST_INTERVAL_MS > 0U
+        next_uplink_ms = BOARD_TELEMETRY_TEST_INTERVAL_MS;
+#endif
 
         if (telemetry_result == TELEMETRY_RESULT_FAILED)
         {

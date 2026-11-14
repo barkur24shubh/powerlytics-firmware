@@ -19,6 +19,7 @@ typedef struct {
     uint8_t  ring[U2_RING_SZ];
     volatile uint32_t wr;     // write index
     volatile uint32_t rd;     // read index
+    volatile uint16_t dma_pos; // last consumed position in circular DMA buffer
 
     osSemaphoreId_t rxSem;    // released on RX idle event
 } uart2_rx_t;
