@@ -137,6 +137,8 @@ static void modem_print_text_or_summary(const char *prefix, const char *text)
 #define HTTP_OTA_RANGE_READ_RETRIES   4U
 #define HTTP_OTA_RANGE_WINDOW  32768U
 #define HTTP_OTA_USE_RANGE_WINDOWS    1U
+#define HTTP_OTA_SSL_CONTEXT_ID       1U
+#define HTTP_OTA_CA_FILE              "ota_root_ca.pem"
 #define HTTP_OTA_ACTION_MS     120000UL
 #define HTTP_OTA_READ_MS       30000UL
 #define HTTP_OTA_TAIL_WAIT_MS  80UL
@@ -392,10 +394,26 @@ static uint8_t modem_http_start_request_locked(const char *url,
             HTTP_OTA_LOG("[OTA][HTTP] HTTPSSL enable failed/unsupported\r\n");
             return 0U;
         }
-        /* A76XX/A7670 HTTP(S) binds requests to an SSL context separately
-         * from the global HTTPSSL switch. Context 0 must be provisioned with
-         * a trusted CA and server verification enabled for production. */
-        if (!modem_http_send_wait_ok_locked("AT+HTTPPARA=\"SSLCFG\",0", NULL, 5000U)) {
+        /* Keep OTA HTTPS separate from the legacy MQTT TLS context. MQTT
+         * currently uses context 0 without server verification. OTA context
+         * 1 must verify the server and use the provisioned trust anchor. */
+        if (!modem_http_send_wait_ok_locked("AT+CSSLCFG=\"sslversion\",1,4", NULL, 5000U) ||
+            !modem_http_send_wait_ok_locked("AT+CSSLCFG=\"authmode\",1,1", NULL, 5000U) ||
+            !modem_http_send_wait_ok_locked("AT+CSSLCFG=\"ignorelocaltime\",1,0", NULL, 5000U) ||
+            !modem_http_send_wait_ok_locked("AT+CSSLCFG=\"enableSNI\",1,1", NULL, 5000U)) {
+            HTTP_OTA_LOG("[OTA][HTTP] verified TLS context setup failed\r\n");
+            return 0U;
+        }
+        snprintf(s_http_ota_cmd, sizeof(s_http_ota_cmd),
+                 "AT+CSSLCFG=\"cacert\",%u,\"%s\"",
+                 (unsigned)HTTP_OTA_SSL_CONTEXT_ID, HTTP_OTA_CA_FILE);
+        if (!modem_http_send_wait_ok_locked(s_http_ota_cmd, NULL, 5000U)) {
+            HTTP_OTA_LOG("[OTA][HTTP] trusted CA selection failed\r\n");
+            return 0U;
+        }
+        snprintf(s_http_ota_cmd, sizeof(s_http_ota_cmd),
+                 "AT+HTTPPARA=\"SSLCFG\",%u", (unsigned)HTTP_OTA_SSL_CONTEXT_ID);
+        if (!modem_http_send_wait_ok_locked(s_http_ota_cmd, NULL, 5000U)) {
             HTTP_OTA_LOG("[OTA][HTTP] SSL context selection failed\r\n");
             return 0U;
         }
