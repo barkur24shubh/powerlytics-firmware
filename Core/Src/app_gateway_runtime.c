@@ -420,6 +420,13 @@ static void app_gateway_online_idle_for(uint32_t wait_ms)
             continue;
         }
 
+        /*
+         * The post-install trial confirmation fires 5 min after boot. Check it
+         * here too, not only once per telemetry cycle, or OTA_CONFIRMED waits
+         * for the next uplink (up to the cloud interval, e.g. 30 min).
+         */
+        (void)connectivity_report_ota_boot_result_once();
+
         if (handle_disconnect_urc_once())
         {
             osDelay(DISCONNECT_RETRY_DELAY_MS);

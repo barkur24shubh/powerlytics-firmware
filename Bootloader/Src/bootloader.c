@@ -172,34 +172,50 @@ static uint8_t spi1_xfer(uint8_t tx, uint8_t *rx)
     return 1U;
 }
 
+/*
+ * W25Q chip-select differs per board: B1-Beta-C uses PB0, B1-V4-C uses PD7
+ * (see Board/<board>/board_profile.h). The Makefile passes the board's pin;
+ * PB0 stays the default. With the wrong pin the bootloader reads all 0xFF,
+ * finds no manifest and silently boots the old image, so an OTA never
+ * installs.
+ */
+#ifndef BOOT_W25Q_CS_PORT
+#define BOOT_W25Q_CS_PORT       GPIOB
+#define BOOT_W25Q_CS_PORT_EN    RCC_AHB1ENR_GPIOBEN
+#endif
+#ifndef BOOT_W25Q_CS_PIN
+#define BOOT_W25Q_CS_PIN        0U
+#endif
+
 static void w25q_cs(uint8_t high)
 {
     if (high) {
-        GPIOB->BSRR = (1UL << 0U);
+        BOOT_W25Q_CS_PORT->BSRR = (1UL << BOOT_W25Q_CS_PIN);
     } else {
-        GPIOB->BSRR = (1UL << (0U + 16U));
+        BOOT_W25Q_CS_PORT->BSRR = (1UL << (BOOT_W25Q_CS_PIN + 16U));
     }
 }
 
 static void w25q_init_gpio_spi(void)
 {
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN | BOOT_W25Q_CS_PORT_EN;
     RCC->APB2ENR |= RCC_APB2ENR_SPI1EN;
     __DSB();
 
-    GPIOB->BSRR = (1UL << 0U);
+    /* Chip-select: push-pull output, idle high. */
+    BOOT_W25Q_CS_PORT->BSRR = (1UL << BOOT_W25Q_CS_PIN);
+    BOOT_W25Q_CS_PORT->MODER &= ~(3UL << (BOOT_W25Q_CS_PIN * 2U));
+    BOOT_W25Q_CS_PORT->MODER |=  (1UL << (BOOT_W25Q_CS_PIN * 2U));
+    BOOT_W25Q_CS_PORT->OSPEEDR |= (3UL << (BOOT_W25Q_CS_PIN * 2U));
 
-    GPIOB->MODER &= ~((3UL << (0U * 2U)) |
-                      (3UL << (3U * 2U)) |
+    GPIOB->MODER &= ~((3UL << (3U * 2U)) |
                       (3UL << (4U * 2U)) |
                       (3UL << (5U * 2U)));
-    GPIOB->MODER |=  ((1UL << (0U * 2U)) |
-                      (2UL << (3U * 2U)) |
+    GPIOB->MODER |=  ((2UL << (3U * 2U)) |
                       (2UL << (4U * 2U)) |
                       (2UL << (5U * 2U)));
 
-    GPIOB->OSPEEDR |= ((3UL << (0U * 2U)) |
-                       (3UL << (3U * 2U)) |
+    GPIOB->OSPEEDR |= ((3UL << (3U * 2U)) |
                        (3UL << (4U * 2U)) |
                        (3UL << (5U * 2U)));
 
