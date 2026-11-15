@@ -138,8 +138,13 @@ static void modem_print_text_or_summary(const char *prefix, const char *text)
 #define HTTP_OTA_RANGE_READ_RETRIES   4U
 #define HTTP_OTA_RANGE_WINDOW  32768U
 #define HTTP_OTA_USE_RANGE_WINDOWS    1U
-#define HTTP_OTA_SSL_CONTEXT_ID       1U
-#define HTTP_OTA_CA_FILE              "ota_gts_root_r4.pem"
+#define HTTP_OTA_SSL_CONTEXT_ID       0U
+/* Private RSA root of the backend OTA download proxy. The modem cannot do
+ * TLS with ECDSA-certificate servers (R2/Cloudflare), so OTA artifacts are
+ * fetched through that RSA-only proxy and this root is pinned. A new file
+ * name forces the modem to download the new root instead of reusing an old
+ * file with the same name. */
+#define HTTP_OTA_CA_FILE              "ota_dl_rsa_root.pem"
 #define HTTP_OTA_ACTION_MS     120000UL
 #define HTTP_OTA_READ_MS       30000UL
 #define HTTP_OTA_TAIL_WAIT_MS  80UL
@@ -170,6 +175,7 @@ static void modem_print_text_or_summary(const char *prefix, const char *text)
 static char s_http_ota_cmd[HTTP_OTA_CMD_MAX];
 static uint8_t s_ota_ca_ready;
 static uint8_t s_ota_tls_clock_ready;
+static char s_http_ota_ssl_context_detail[64];
 static uint8_t s_http_ota_chunk[HTTP_OTA_CHUNK_SIZE];
 static uint8_t s_tcp_ota_range_buf[TCP_OTA_RANGE_SIZE];
 static uint8_t s_tcp_ota_verify_buf[TCP_OTA_RANGE_SIZE];
@@ -177,7 +183,7 @@ static uint8_t s_tcp_ota_rx_buf[TCP_OTA_RX_READ_SIZE];
 static char s_tcp_ota_request[512];
 static char s_tcp_ota_headers[TCP_OTA_HEADER_MAX];
 static const char *s_http_ota_last_error = "none";
-static char s_http_ota_last_error_buf[40];
+static char s_http_ota_last_error_buf[128];
 
 static void modem_http_set_last_error(const char *reason)
 {
@@ -211,7 +217,15 @@ static const char *modem_http_action_error_name(int status)
     case 707: return "tls_memory_error";
     case 708: return "tls_invalid_parameter";
     case 709: return "tls_network_error";
-    case 710: return "tls_session_start_failed";
+    case 710:
+        if (s_http_ota_ssl_context_detail[0]) {
+            snprintf(s_http_ota_last_error_buf,
+                     sizeof(s_http_ota_last_error_buf),
+                     "tls_session_start_failed_%s",
+                     s_http_ota_ssl_context_detail);
+            return s_http_ota_last_error_buf;
+        }
+        return "tls_session_start_failed_ctx_readback_missing";
     case 711: return "tls_wrong_state";
     case 712: return "tls_socket_create_failed";
     case 713: return "tls_dns_failed";
@@ -280,6 +294,34 @@ static void modem_http_log_response(const char *line)
     HTTP_OTA_LOG("[GSM->HTTP] %s\r\n", line ? line : "");
 }
 
+static void modem_http_capture_ssl_context(const char *cmd, const char *line)
+{
+    unsigned context_id = 0U;
+    unsigned version = 0U;
+    unsigned auth_mode = 0U;
+    unsigned ignore_local_time = 0U;
+    unsigned timeout = 0U;
+
+    if (!cmd || !line || strncmp(cmd, "AT+CSSLCFG=", 11U) != 0 ||
+        strchr(cmd, '\"') != NULL || !strstr(line, "+CSSLCFG:")) {
+        return;
+    }
+
+    if (sscanf(line, "+CSSLCFG: %u,%u,%u,%u,%u",
+               &context_id, &version, &auth_mode,
+               &ignore_local_time, &timeout) == 5) {
+        (void)snprintf(s_http_ota_ssl_context_detail,
+                       sizeof(s_http_ota_ssl_context_detail),
+                       "ctx%u_ver%u_auth%u_ignorelocaltime%u_timeout%u",
+                       context_id, version, auth_mode,
+                       ignore_local_time, timeout);
+    } else {
+        (void)snprintf(s_http_ota_ssl_context_detail,
+                       sizeof(s_http_ota_ssl_context_detail),
+                       "ctx_readback_unparsed");
+    }
+}
+
 static uint8_t modem_http_send_wait_ok_locked(const char *cmd,
                                               const char *expected,
                                               uint32_t timeout_ms)
@@ -318,6 +360,7 @@ static uint8_t modem_http_send_wait_ok_locked(const char *cmd,
             continue;
         }
         modem_http_log_response(line);
+        modem_http_capture_ssl_context(cmd, line);
 
         if (!expected_seen && expected && strstr(line, expected)) {
             expected_seen = 1U;
@@ -571,6 +614,7 @@ static int modem_http_wait_action_locked(uint32_t timeout_ms,
                     *out_len = (uint32_t)len;
                 }
                 if (status == 710) {
+                    s_http_ota_ssl_context_detail[0] = '\0';
                     snprintf(s_http_ota_cmd, sizeof(s_http_ota_cmd),
                              "AT+CSSLCFG=%u", (unsigned)HTTP_OTA_SSL_CONTEXT_ID);
                     HTTP_OTA_LOG("[OTA][TLS] reading back SSL context after session-start failure\r\n");
@@ -619,24 +663,37 @@ static uint8_t modem_http_start_request_locked(const char *url,
      * configured and activated by the modem bring-up path before OTA. */
 
     if (!strncmp(url, "https://", 8U)) {
-        /* Keep OTA HTTPS separate from the legacy MQTT TLS context. MQTT
-         * currently uses context 0 without server verification. OTA context
-         * 1 must verify the server and use the provisioned trust anchor.
-         * SIM7670C enables HTTPS from the https:// URL and HTTPPARA=SSLCFG;
-         * it does not implement the unrelated AT+HTTPSSL command. */
-        if (!modem_http_send_wait_ok_locked("AT+CSSLCFG=\"sslversion\",1,4", NULL, 5000U)) {
+        /* MQTT is fully stopped for this request. Reuse context 0 because the
+         * SIM7670C HTTP client and MQTT service share the modem TLS resources;
+         * MQTT reapplies its own context when it reconnects. Restrict TLS to
+         * TLS 1.2 (3) and keep strict server certificate verification. HTTPS
+         * is selected with the URL scheme plus HTTPPARA=SSLCFG; this modem
+         * does not implement the unrelated AT+HTTPSSL command. */
+        snprintf(s_http_ota_cmd, sizeof(s_http_ota_cmd),
+                 "AT+CSSLCFG=\"sslversion\",%u,3",
+                 (unsigned)HTTP_OTA_SSL_CONTEXT_ID);
+        if (!modem_http_send_wait_ok_locked(s_http_ota_cmd, NULL, 5000U)) {
             modem_http_set_last_error("tls_version_config_failed");
             return 0U;
         }
-        if (!modem_http_send_wait_ok_locked("AT+CSSLCFG=\"authmode\",1,1", NULL, 5000U)) {
+        snprintf(s_http_ota_cmd, sizeof(s_http_ota_cmd),
+                 "AT+CSSLCFG=\"authmode\",%u,1",
+                 (unsigned)HTTP_OTA_SSL_CONTEXT_ID);
+        if (!modem_http_send_wait_ok_locked(s_http_ota_cmd, NULL, 5000U)) {
             modem_http_set_last_error("tls_auth_mode_config_failed");
             return 0U;
         }
-        if (!modem_http_send_wait_ok_locked("AT+CSSLCFG=\"ignorelocaltime\",1,0", NULL, 5000U)) {
+        snprintf(s_http_ota_cmd, sizeof(s_http_ota_cmd),
+                 "AT+CSSLCFG=\"ignorelocaltime\",%u,0",
+                 (unsigned)HTTP_OTA_SSL_CONTEXT_ID);
+        if (!modem_http_send_wait_ok_locked(s_http_ota_cmd, NULL, 5000U)) {
             modem_http_set_last_error("tls_time_validation_config_failed");
             return 0U;
         }
-        if (!modem_http_send_wait_ok_locked("AT+CSSLCFG=\"enableSNI\",1,1", NULL, 5000U)) {
+        snprintf(s_http_ota_cmd, sizeof(s_http_ota_cmd),
+                 "AT+CSSLCFG=\"enableSNI\",%u,1",
+                 (unsigned)HTTP_OTA_SSL_CONTEXT_ID);
+        if (!modem_http_send_wait_ok_locked(s_http_ota_cmd, NULL, 5000U)) {
             modem_http_set_last_error("tls_sni_config_failed");
             return 0U;
         }
@@ -765,6 +822,16 @@ static int modem_http_read_chunk_locked(uint32_t offset,
              (unsigned long)offset,
              (unsigned long)want);
 
+    /* Anything still buffered here belongs to an earlier response. Reading
+     * it as part of this chunk is how a binary payload got misframed; drop it
+     * and say so. */
+    if (u2rx_available(&g_u2rx) > 0U) {
+        HTTP_OTA_LOG("[HTTP] dropping %lu stale bytes before read offset=%lu\r\n",
+                     (unsigned long)u2rx_available(&g_u2rx),
+                     (unsigned long)offset);
+        u2_flush_all();
+    }
+
     HTTP_OTA_LOG("[HTTP->GSM] %s\r\n", s_http_ota_cmd);
     u2_send_cmd(s_http_ota_cmd);
 
@@ -868,9 +935,11 @@ static int modem_http_read_chunk_locked(uint32_t offset,
                     }
                 }
 
-                if (strstr(line, "ERROR") || strstr(line, "+CME ERROR")) {
-                    return -1;
-                }
+                /* Anything else right after the payload means the byte
+                 * count and the stream disagree: the chunk is misframed. */
+                HTTP_OTA_LOG("[HTTP] unexpected line after chunk offset=%lu; rejecting\r\n",
+                             (unsigned long)offset);
+                return -1;
             }
 
             HTTP_OTA_LOG("[HTTP] chunk complete without tail marker\r\n");
@@ -880,6 +949,13 @@ static int modem_http_read_chunk_locked(uint32_t offset,
         if (strstr(line, "ERROR") || strstr(line, "+CME ERROR")) {
             return -1;
         }
+
+        /* Before the +HTTPREAD header only the echo, OK and a stale zero
+         * marker are legitimate. Any other line (typically binary payload
+         * read as text) means the stream is out of step with this request. */
+        HTTP_OTA_LOG("[HTTP] unexpected line before chunk header offset=%lu; rejecting\r\n",
+                     (unsigned long)offset);
+        return -1;
     }
 
     HTTP_OTA_LOG("[HTTP] chunk header timeout offset=%lu\r\n", (unsigned long)offset);
@@ -1596,6 +1672,14 @@ uint8_t modem_http_download_to_w25q(const char *url,
     uint32_t written = 0U;
     char calc_sha256[65] = {0};
     sha256_ctx_t sha;
+    /* Diagnostics: per-window hash + modem UART error counters. */
+    extern volatile uint32_t g_modem_uart_err_count;
+    extern volatile uint32_t g_modem_uart_err_flags;
+    extern volatile uint32_t g_modem_uart_rx_restarts;
+    sha256_ctx_t win_sha;
+    char win_hex[65] = {0};
+    uint32_t win_err_start = g_modem_uart_err_count;
+    uint32_t dl_err_start = g_modem_uart_err_count;
 
     if (out_size) {
         *out_size = 0U;
@@ -1798,6 +1882,8 @@ uint8_t modem_http_download_to_w25q(const char *url,
 
             window_remaining = window_len;
             window_read = 0U;
+            sha256_init(&win_sha);
+            win_err_start = g_modem_uart_err_count;
         }
 
         uint32_t want = use_range_windows ? window_remaining : (content_len - written);
@@ -1869,11 +1955,22 @@ uint8_t modem_http_download_to_w25q(const char *url,
         }
 
         sha256_update(&sha, s_http_ota_chunk, (size_t)got);
+        if (use_range_windows) {
+            sha256_update(&win_sha, s_http_ota_chunk, (size_t)got);
+        }
         written += (uint32_t)got;
         if (use_range_windows) {
             window_read += (uint32_t)got;
             window_remaining -= (uint32_t)got;
             if (window_remaining == 0U) {
+                sha256_final_hex(&win_sha, win_hex);
+                HTTP_OTA_LOG("[OTA][WIN] start=%lu len=%lu sha256=%s uart_err=+%lu flags=0x%02lX restarts=%lu\r\n",
+                             (unsigned long)(written - window_read),
+                             (unsigned long)window_read,
+                             win_hex,
+                             (unsigned long)(g_modem_uart_err_count - win_err_start),
+                             (unsigned long)g_modem_uart_err_flags,
+                             (unsigned long)g_modem_uart_rx_restarts);
                 (void)modem_http_send_wait_ok_locked("AT+HTTPTERM", NULL, 5000U);
                 modem_http_drain_until_quiet_locked(250U, 80U);
                 active_window_start = 0xFFFFFFFFUL;
@@ -1892,9 +1989,29 @@ uint8_t modem_http_download_to_w25q(const char *url,
         out_sha256[64] = '\0';
     }
 
-    HTTP_OTA_LOG("[OTA][VERIFY] size=%lu sha256=%s\r\n",
+    HTTP_OTA_LOG("[OTA][VERIFY] size=%lu sha256=%s uart_err_total=%lu flags=0x%02lX\r\n",
                  (unsigned long)written,
-                 calc_sha256);
+                 calc_sha256,
+                 (unsigned long)(g_modem_uart_err_count - dl_err_start),
+                 (unsigned long)g_modem_uart_err_flags);
+    {
+        /* Cross-check: hash what actually landed in external flash. */
+        sha256_ctx_t rb_sha;
+        char rb_hex[65] = {0};
+        uint32_t off = 0U;
+        uint8_t rb_ok = 1U;
+        sha256_init(&rb_sha);
+        while (off < written) {
+            uint32_t n = written - off;
+            if (n > sizeof(s_http_ota_chunk)) n = sizeof(s_http_ota_chunk);
+            if (!w25q_read(flash, base_addr + off, s_http_ota_chunk, n)) { rb_ok = 0U; break; }
+            sha256_update(&rb_sha, s_http_ota_chunk, n);
+            off += n;
+            modem_http_kick_watchdog();
+        }
+        sha256_final_hex(&rb_sha, rb_hex);
+        HTTP_OTA_LOG("[OTA][VERIFY] flash readback ok=%u sha256=%s\r\n", rb_ok, rb_hex);
+    }
 
     if (!modem_http_sha_matches(expected_sha256, calc_sha256)) {
         HTTP_OTA_LOG("[OTA][VERIFY] sha mismatch expected=%s actual=%s\r\n",

@@ -88,6 +88,46 @@ jobs:
           fi
           echo "public_key_hex=${derived_key,,}" >> "${GITHUB_OUTPUT}"
 
+      # Without Core/Inc/config.local.h the build silently uses placeholder
+      # network settings (MQTT host example.invalid). A device that installed
+      # such an image could never reconnect, so write the real values from
+      # secrets and refuse to build without them. The file stays in the
+      # runner workspace only and is never committed or uploaded.
+      - name: Write device network config from secrets
+        shell: bash
+        env:
+          FW_APN: ${{ secrets.FIRMWARE_APN }}
+          FW_MQTT_HOST_URI: ${{ secrets.FIRMWARE_MQTT_HOST_URI }}
+          FW_MQTT_SNI_HOST: ${{ secrets.FIRMWARE_MQTT_SNI_HOST }}
+          FW_MQTT_USERNAME: ${{ secrets.FIRMWARE_MQTT_USERNAME }}
+          FW_MQTT_PASSWORD: ${{ secrets.FIRMWARE_MQTT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in FW_APN FW_MQTT_HOST_URI FW_MQTT_SNI_HOST FW_MQTT_USERNAME FW_MQTT_PASSWORD; do
+            value="${!name:-}"
+            if [[ -z "${value}" ]]; then
+              echo "::error::Missing GitHub Actions secret for ${name#FW_} (FIRMWARE_${name#FW_})"
+              exit 1
+            fi
+            if [[ "${value}" == *'"'* || "${value}" == *'\'* || "${value}" == *$'\n'* ]]; then
+              echo "::error::FIRMWARE_${name#FW_} must not contain quotes, backslashes or newlines"
+              exit 1
+            fi
+          done
+          umask 077
+          {
+            echo '#ifndef CONFIG_LOCAL_H'
+            echo '#define CONFIG_LOCAL_H'
+            printf '#define APN                  "%s"\n' "${FW_APN}"
+            printf '#define MQTT_HOST_URI        "%s"\n' "${FW_MQTT_HOST_URI}"
+            printf '#define MQTT_SNI_HOST        "%s"\n' "${FW_MQTT_SNI_HOST}"
+            echo '#define MQTT_PORT            8883'
+            printf '#define MQTT_USERNAME        "%s"\n' "${FW_MQTT_USERNAME}"
+            printf '#define MQTT_PASSWORD        "%s"\n' "${FW_MQTT_PASSWORD}"
+            echo '#define MQTT_TIMEOUT_MS      10000U'
+            echo '#endif'
+          } > Core/Inc/config.local.h
+
       - name: Build selected board from this commit
         shell: bash
         env:
@@ -141,6 +181,10 @@ jobs:
           fi
           if ! grep -a -F -q "${FIRMWARE_VERSION}" "${app}"; then
             echo "::error::Firmware image does not contain version ${FIRMWARE_VERSION}"
+            exit 1
+          fi
+          if grep -a -F -q "example.invalid" "${app}"; then
+            echo "::error::Firmware image was built with placeholder MQTT settings; refusing to release"
             exit 1
           fi
 

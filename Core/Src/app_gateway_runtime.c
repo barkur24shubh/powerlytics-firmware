@@ -386,6 +386,10 @@ static void app_gateway_online_idle_for(uint32_t wait_ms)
         uint32_t effective_wait_ms = wait_ms;
         uint32_t current_interval_ms = app_modbus_payload_get_telemetry_interval_ms();
 
+#if BOARD_TELEMETRY_TEST_INTERVAL_MS > 0U
+        current_interval_ms = BOARD_TELEMETRY_TEST_INTERVAL_MS;
+#endif
+
         if (current_interval_ms > 0U && current_interval_ms < effective_wait_ms)
         {
             effective_wait_ms = current_interval_ms;

@@ -55,7 +55,7 @@
 #define BOARD_SECONDARY_ADC_UART_BAUD     115200U
 
 /* Temporary edge-test override. Set to 0 to use the cloud-configured interval. */
-#define BOARD_TELEMETRY_TEST_INTERVAL_MS  1000U
+#define BOARD_TELEMETRY_TEST_INTERVAL_MS  0U
 
 #define BOARD_MODBUS_UART_TX_GPIO_PORT GPIOD
 #define BOARD_MODBUS_UART_TX_GPIO_PIN  GPIO_PIN_8

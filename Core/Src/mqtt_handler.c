@@ -199,17 +199,33 @@ static void mqtt_ota_release_busy(void)
  * (and its socket/TLS session) has been torn down. */
 static uint8_t mqtt_stop_for_ota_http(void)
 {
-    (void)SIM800_SendATCommand2("AT+CMQTTDISC=0,120", "OK", 5000U, true);
-    osDelay(300U);
-    (void)SIM800_SendATCommand2("AT+CMQTTREL=0", "OK", 5000U, true);
-    osDelay(300U);
+    /* The immediate OK only means the command was accepted. The modem keeps
+     * releasing MQTT's socket/TLS state asynchronously; starting HTTP before
+     * these URCs can leave the shared SSL session pool busy (HTTP status 710).
+     */
+    if (!SIM800_SendATCommand2("AT+CMQTTDISC=0,10", "OK", 5000U, true)) {
+        print("[OTA][MQTT] disconnect command was not accepted\r\n");
+        return 0U;
+    }
+    if (!u2rx_wait_for(&g_u2rx, "+CMQTTDISC: 0,0", 15000U)) {
+        print("[OTA][MQTT] disconnect completion URC missing or failed\r\n");
+        return 0U;
+    }
+
+    if (!SIM800_SendATCommand2("AT+CMQTTREL=0", "OK", 5000U, true)) {
+        print("[OTA][MQTT] client release failed after disconnect\r\n");
+        return 0U;
+    }
 
     if (!SIM800_SendATCommand2("AT+CMQTTSTOP", "OK", 8000U, true)) {
         print("[OTA][MQTT] failed to stop MQTT service before HTTPS\r\n");
         return 0U;
     }
+    if (!u2rx_wait_for(&g_u2rx, "+CMQTTSTOP: 0", 15000U)) {
+        print("[OTA][MQTT] stop completion URC missing or failed\r\n");
+        return 0U;
+    }
 
-    osDelay(300U);
     print("[OTA][MQTT] service stopped; HTTPS can use modem TLS resources\r\n");
     return 1U;
 }
@@ -886,6 +902,11 @@ static uint8_t handle_ota_cjson(cJSON *root)
         return 1U;
     }
 
+    /* Keep modem command/result lines visible during an OTA download even
+     * when the saved device config has routine USB diagnostics disabled. */
+    debug_uart_force_enabled_for(180000U);
+    print("[OTA] download trace enabled on USB\r\n");
+
     if (!mqtt_stop_for_ota_http()) {
         (void)publish_ota_status_reported(deployment_id,
                                           "OTA_DOWNLOAD_FAILED",
@@ -893,6 +914,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                           1,
                                           target_version,
                                           "mqtt_tls_release_failed");
+        debug_uart_force_enabled_for(0U);
         mqtt_ota_release_busy();
         return 1U;
     }
@@ -927,6 +949,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                          download_ok,
                          progress.last_percent,
                          "MQTT_RECONNECT");
+        debug_uart_force_enabled_for(0U);
         mqtt_ota_release_busy();
         return 1U;
     }
@@ -942,6 +965,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                           (int)progress.last_percent,
                                           target_version,
                                           fail_reason);
+        debug_uart_force_enabled_for(0U);
         mqtt_ota_release_busy();
         return 1U;
     }
@@ -953,6 +977,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                                  target_version,
                                                  "downloaded_to_w25q");
     if (!ack_ok) {
+        debug_uart_force_enabled_for(0U);
         mqtt_ota_release_busy();
         return 1U;
     }
@@ -964,6 +989,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                          target_version,
                                          downloaded_sha256);
     if (!ack_ok) {
+        debug_uart_force_enabled_for(0U);
         mqtt_ota_release_busy();
         return 1U;
     }
@@ -979,6 +1005,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                           100,
                                           target_version,
                                           "manifest_write_failed");
+        debug_uart_force_enabled_for(0U);
         mqtt_ota_release_busy();
         return 1U;
     }
@@ -990,6 +1017,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
                                          target_version,
                                          "bootloader_install_scheduled");
     if (!ack_ok) {
+        debug_uart_force_enabled_for(0U);
         mqtt_ota_release_busy();
         return 1U;
     }
@@ -1297,6 +1325,7 @@ uint8_t MQTT_Subscribe(const char *topic)
 
     print("[MQTT] subscribed to downlink topic=%s\r\n", topic_u);
     s_consecutive_mqtt_subscribe_fail = 0;
+
     return 1;
 
 fail:

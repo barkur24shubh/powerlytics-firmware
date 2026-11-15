@@ -1107,8 +1107,28 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 #endif
 }
 
+/* Modem UART error accounting (OTA corruption diagnostics). */
+volatile uint32_t g_modem_uart_err_count = 0U;
+volatile uint32_t g_modem_uart_err_flags = 0U;
+volatile uint32_t g_modem_uart_rx_restarts = 0U;
+
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
+#if BOARD_HAS_CELLULAR
+    if (huart && huart->Instance == MODEM_UART_INSTANCE) {
+        g_modem_uart_err_count++;
+        g_modem_uart_err_flags |= huart->ErrorCode;
+        /* Blocking errors (overrun) abort the DMA reception; restart it so
+         * the modem link does not go silently deaf. */
+        if (huart->RxState == HAL_UART_STATE_READY) {
+            g_u2rx.dma_pos = 0U;
+            if (u2rx_start(&g_u2rx) == HAL_OK) {
+                g_modem_uart_rx_restarts++;
+            }
+        }
+        return;
+    }
+#endif
 #if BOARD_MODBUS_DIAGNOSTIC_ONLY
     if (huart && huart->Instance == BOARD_MODBUS_UART_INSTANCE) {
         s_modbus_diag_uart_error |= huart->ErrorCode;
