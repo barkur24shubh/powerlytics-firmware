@@ -149,6 +149,9 @@ static uint8_t process_downlink_once(const char *tag)
               tag,
               (unsigned long)strlen(rx));
         app_debug_led_event(DEBUG_LED_EVENT_DOWNLINK);
+        /* Acks of relay commands already run on arrival go out before a
+         * slower downlink (a config takes ~2 s to apply) is handled. */
+        (void)connectivity_flush_pending_acks();
         connectivity_handle_downlink(rx);
         /* Command acks go out now, ahead of anything else queued. */
         (void)connectivity_flush_pending_acks();
