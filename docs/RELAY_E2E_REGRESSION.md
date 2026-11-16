@@ -119,3 +119,15 @@ Bugs found:
 - Open: a telemetry snapshot built just before a relay switch and published after the ack can briefly show the old state until the next report; the backend could ignore reports older than `lastCommandAt`.
 
 - **Hardware/firmware:** relay feedback pins PD12/PD11 read OFF (IDR bits = 1, active-low) even 8 s after RO_1 is driven ON (PB15 high). Either the contact is not closing on the bench or the feedback circuit is not wired; and the firmware reads feedback in the same millisecond it drives the coil, so the logged value is meaningless anyway.
+
+### 2026-11-17 00:38–00:51 IST — firmware 1.0.4 (commits 7a1534a, f774334, 44afc12), cloud interval 5 s, local UI
+
+| Scenario | Result |
+|---|---|
+| 10 commands, 3 s apart, alternating (fast path) | 10/10 switched on arrival (0 ms after the block ended); acks 1.1–2.5 s |
+| B6 config deploy + both relays at once | config (3 116 B) queued, both relays switched on arrival; acks at +1.1 s and +2.1 s, before the config finished applying (after 44afc12; before it the acks waited ~7 s) |
+| Soak: 24 clicks, 5 s apart, alternating | 23 commands sent (one click hit a tile still shown as pending, button disabled by design); 23/23 switched on arrival; 23/23 acks published, median 1.25 s, max 4.2 s; final UI state matches the relays |
+| E1 validation | covered by `actuationService.test.ts` (400 bad action / non-output port / non-ACTIVE, 404 unknown port / device, 409 offline, 429 rate limit, idempotency, cross-device isolation) |
+| D1 reboot | relays come up OFF; first telemetry after reconnect reports them and the UI follows |
+
+Open: the UI learns an ack by polling every 5 s, so "Sending…" can last up to ~10 s after the relay switched; pushing actuation status over the existing device stream would make it immediate. Not run (deferred by the owner): C1–C3 offline/reconnect, relay contact feedback.
