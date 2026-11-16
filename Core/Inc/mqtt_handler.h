@@ -27,5 +27,12 @@ const char *MQTT_LastPublishStage(void);
 void    MQTT_SetOtaFlash(W25Q_Handle *flash);
 uint8_t MQTT_OtaIsBusy(void);
 uint8_t MQTT_ReportOtaBootResultOnce(void);
+/* Queued actuation acks: publish at priority, retry on failure. Returns the
+ * number still queued. */
+uint8_t  MQTT_FlushActuationAcks(void);
+/* ms until a gap-enforcing publish could start without sleeping. */
+uint32_t MQTT_PublishGapRemainingMs(void);
+/* Let relay commands run the moment they arrive (modem_urc fast path). */
+void     MQTT_InstallFastDownlinkHandler(void);
 
 #endif

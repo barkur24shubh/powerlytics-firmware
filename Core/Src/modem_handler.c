@@ -1,4 +1,5 @@
 #include "modem_handler.h"
+#include "rtc_manager.h"
 #include "main.h"
 #include "config.h"
 #include "debug_uart.h"
@@ -2473,6 +2474,123 @@ void Check_Internet_Service(void)
     (void)SIM800_SendATCommand2("AT+HTTPTERM", NULL, 8000, false);
 
     print("========== INTERNET CHECK DONE ==========\r\n");
+}
+
+/* ---------------- network clock -> RTC ----------------
+ * The RTC is the time base for actuation expiry and for telemetry/event
+ * timestamps. It used to be set only from the build time and was found
+ * months off (2026-08-27 on 2026-11-16), so command expiry never triggered.
+ * The modem carries operator network time (NITZ, enabled with AT+CTZU=1);
+ * copy it into the RTC, which is kept in IST (UTC+05:30) like the rest of
+ * the firmware assumes. */
+static int64_t mh_days_from_civil(int y, int m, int d)
+{
+    y -= (m <= 2) ? 1 : 0;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const int yoe = (int)(y - era * 400);
+    const int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (int64_t)doe - 719468;
+}
+
+static void mh_civil_from_days(int64_t z, int *y, int *m, int *d)
+{
+    z += 719468;
+    const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    const int doe = (int)(z - era * 146097);
+    const int yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const int doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const int mp = (5 * doy + 2) / 153;
+    *d = doy - (153 * mp + 2) / 5 + 1;
+    *m = mp < 10 ? mp + 3 : mp - 9;
+    *y = (int)(yoe + era * 400) + ((*m <= 2) ? 1 : 0);
+}
+
+#define MH_IST_OFFSET_S   (5 * 3600 + 30 * 60)
+#define MH_RTC_RESYNC_S   5
+
+uint8_t modem_sync_rtc_from_network(void)
+{
+    char line[96];
+    uint8_t parsed = 0U;
+    unsigned yy = 0U, mo = 0U, dd = 0U, hh = 0U, mi = 0U, ss = 0U, tzq = 0U;
+    char tzsign = '+';
+
+    if (g_at_mutex) osMutexAcquire(g_at_mutex, osWaitForever);
+    at_rx_active = 1;
+
+    /* Network time updates into the modem clock only with CTZU on. */
+    u2_drain_pending();
+    u2_send_cmd("AT+CTZU=1");
+    uint32_t start = HAL_GetTick();
+    while ((HAL_GetTick() - start) < 2000U) {
+        int n = u2rx_read_line(&g_u2rx, line, sizeof(line), 500);
+        if (n <= 0) continue;
+        trim_crlf(line);
+        if (!strcmp(line, "OK") || strstr(line, "ERROR")) break;
+    }
+
+    u2_drain_pending();
+    u2_send_cmd("AT+CCLK?");
+    start = HAL_GetTick();
+    while ((HAL_GetTick() - start) < 2000U) {
+        int n = u2rx_read_line(&g_u2rx, line, sizeof(line), 500);
+        if (n <= 0) continue;
+        trim_crlf(line);
+        const char *p = strstr(line, "+CCLK:");
+        if (p) {
+            int got = sscanf(p, "+CCLK: \"%2u/%2u/%2u,%2u:%2u:%2u%c%2u",
+                             &yy, &mo, &dd, &hh, &mi, &ss, &tzsign, &tzq);
+            parsed = (got == 8 && (tzsign == '+' || tzsign == '-')) ? 1U : 0U;
+            continue;
+        }
+        if (!strcmp(line, "OK") || strstr(line, "ERROR")) break;
+    }
+
+    at_rx_active = 0;
+    if (g_at_mutex) osMutexRelease(g_at_mutex);
+
+    /* An unsynced modem reports its default epoch (70/01/01, 80/01/06...). */
+    if (!parsed || yy < 25U || mo < 1U || mo > 12U || dd < 1U || dd > 31U ||
+        hh > 23U || mi > 59U || ss > 59U || tzq > 56U) {
+        print("[CLOCK] network time not available yet\r\n");
+        return 0U;
+    }
+
+    int64_t local_s = mh_days_from_civil((int)(2000U + yy), (int)mo, (int)dd) * 86400 +
+                      (int64_t)hh * 3600 + (int64_t)mi * 60 + (int64_t)ss;
+    int64_t tz_s = (int64_t)tzq * 15 * 60;
+    int64_t utc_s = (tzsign == '-') ? (local_s + tz_s) : (local_s - tz_s);
+    int64_t ist_s = utc_s + MH_IST_OFFSET_S;
+
+    int64_t rtc_s = 0;
+    rtc_datetime_t now;
+    uint8_t rtc_ok = (rtc_is_datetime_valid() && rtc_get_datetime(&now)) ? 1U : 0U;
+    if (rtc_ok) {
+        rtc_s = mh_days_from_civil(now.year, now.month, now.day) * 86400 +
+                (int64_t)now.hour * 3600 + (int64_t)now.minute * 60 + now.second;
+    }
+    int64_t drift = rtc_ok ? (rtc_s - ist_s) : 0;
+    if (rtc_ok && drift > -MH_RTC_RESYNC_S && drift < MH_RTC_RESYNC_S) {
+        print("[CLOCK] RTC in sync with network (drift=%ld s)\r\n", (long)drift);
+        return 1U;
+    }
+
+    int y, m, d;
+    int64_t days = ist_s / 86400;
+    int64_t secs = ist_s % 86400;
+    mh_civil_from_days(days, &y, &m, &d);
+    uint8_t set_ok = rtc_set_datetime_ist((uint16_t)y, (uint8_t)m, (uint8_t)d,
+                                          (uint8_t)(secs / 3600), (uint8_t)((secs % 3600) / 60),
+                                          (uint8_t)(secs % 60));
+    print("[CLOCK] RTC %s from network time %04d-%02d-%02dT%02ld:%02ld:%02ld+05:30 (drift was %ld s%s)\r\n",
+          set_ok ? "set" : "set FAILED",
+          y, m, d, (long)(secs / 3600), (long)((secs % 3600) / 60), (long)(secs % 60),
+          (long)drift, rtc_ok ? "" : ", RTC was invalid");
+    app_log_push(set_ok ? APP_LOG_INFO : APP_LOG_WARN, "CLOCK", "RTC_SYNCED_FROM_NETWORK",
+                 set_ok ? "rtc set from network time" : "rtc set failed",
+                 (int32_t)(drift > 2147483647 ? 2147483647 : (drift < -2147483647 ? -2147483647 : drift)), rtc_ok);
+    return set_ok;
 }
 
 uint8_t modem_get_signal_quality(int32_t *rssi, int32_t *ber)

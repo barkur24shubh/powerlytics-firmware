@@ -35,7 +35,7 @@
  *   - Soft modem reset is a last fallback, not the first MQTT retry action.
  */
 
-#define COMM_STARTUP_DELAY_MS              5000UL
+#define COMM_STARTUP_DELAY_MS              500UL
 
 #define COMM_BACKOFF_INITIAL_MS            2000UL
 #define COMM_BACKOFF_MAX_MQTT_MS           30000UL

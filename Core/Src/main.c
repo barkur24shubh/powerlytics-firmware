@@ -55,6 +55,7 @@
 /* Cellular modem */
 #include "uart2_rx_engine.h"
 #include "modem_urc.h"
+#include "mqtt_handler.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -75,7 +76,7 @@ uart2_rx_t g_u2rx;
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define USB_CDC_STANDALONE_TEST  0U
-#define USB_CDC_BOOT_GRACE_MS     8000U
+#define USB_CDC_BOOT_GRACE_MS     1000U
 #define SECONDARY_ADC_LINK_TEST   0U
 #define APP_RUNTIME_WATCHDOG_ENABLED 1U
 
@@ -775,6 +776,7 @@ int main(void)
   u2RxSemHandle = osSemaphoreNew(1, 0, NULL);
   u2rx_init(&g_u2rx, MODEM_UART_HANDLE, u2RxSemHandle);
   modem_urc_init(&g_u2rx);
+  MQTT_InstallFastDownlinkHandler();
 
   if (u2rx_start(&g_u2rx) != HAL_OK)
   {

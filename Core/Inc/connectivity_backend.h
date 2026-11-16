@@ -30,6 +30,9 @@ typedef struct {
     uint8_t (*ota_is_busy)(void);
     uint8_t (*report_ota_boot_result_once)(void);
     uint8_t (*poll_signal_quality)(int32_t *rssi, int32_t *ber);
+    uint8_t (*flush_pending_acks)(void);
+    uint32_t (*publish_gap_remaining_ms)(void);
+    uint8_t (*sync_clock)(void);
     connectivity_state_t (*get_state)(void);
     connectivity_error_t (*get_last_error)(void);
     const connectivity_health_t *(*get_health)(void);

@@ -22,6 +22,8 @@ static volatile uint32_t s_q_tail;   /* read position (monotonic) */
 static volatile uint32_t s_flags;
 static uint32_t          s_rx_count;
 static uint32_t          s_dropped;
+static modem_urc_fast_handler_t s_fast_handler;
+static char              s_fast_buf[MODEM_URC_FAST_MAX];
 
 static uint32_t q_used(void) { return s_q_head - s_q_tail; }
 static uint32_t q_free(void) { return MODEM_URC_QUEUE_BYTES - q_used(); }
@@ -143,6 +145,20 @@ static void capture_block(uart2_rx_t *u2, const char *start_line)
                 note_drop("short_payload", payload_total);
                 return;
             }
+            /* Offer small payloads to the fast handler first; a consumed
+             * one is never committed to the queue. */
+            if (s_fast_handler && (uint32_t)payload_total < MODEM_URC_FAST_MAX) {
+                for (int i = 0; i < payload_total; i++) {
+                    s_fast_buf[i] = (char)q_get_byte(wpos + (uint32_t)i);
+                }
+                s_fast_buf[payload_total] = 0;
+                if (s_fast_handler(s_fast_buf, (size_t)payload_total)) {
+                    s_rx_count++;
+                    print("[MQTT RX] downlink handled on arrival len=%d total=%lu\r\n",
+                          payload_total, (unsigned long)s_rx_count);
+                    return;
+                }
+            }
             q_put_byte(base, (uint8_t)(payload_total & 0xFF));
             q_put_byte(base + 1U, (uint8_t)((payload_total >> 8) & 0xFF));
             __DMB();
@@ -192,6 +208,11 @@ static uint8_t modem_urc_line_hook(uart2_rx_t *u2, const char *line)
         s_flags |= MODEM_URC_FLAG_PDN_DEACT;
     }
     return 0U;
+}
+
+void modem_urc_set_fast_handler(modem_urc_fast_handler_t fn)
+{
+    s_fast_handler = fn;
 }
 
 void modem_urc_init(uart2_rx_t *u2)

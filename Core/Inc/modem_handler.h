@@ -41,6 +41,8 @@ void     GetIMEI(void);
 void     WaitForNetworkAndBlinkLED(void);
 void     Check_Internet_Service(void);
 uint8_t modem_get_signal_quality(int32_t *rssi, int32_t *ber);
+/* Copy operator network time (NITZ) into the RTC (IST). 1 = RTC good. */
+uint8_t modem_sync_rtc_from_network(void);
 uint8_t Modem_SoftReset(void);
 
 typedef void (*modem_http_download_progress_cb_t)(uint32_t downloaded,

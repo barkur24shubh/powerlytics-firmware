@@ -41,6 +41,12 @@ uint8_t connectivity_ota_is_busy(void);
 uint8_t connectivity_report_ota_boot_result_once(void);
 
 uint8_t connectivity_poll_signal_quality(int32_t *rssi, int32_t *ber);
+/* Publish queued command acks now (priority). Returns how many are still queued. */
+uint8_t connectivity_flush_pending_acks(void);
+/* ms before a normal publish could start without the backend sleeping. */
+uint32_t connectivity_publish_gap_remaining_ms(void);
+/* Set the RTC from network time. Returns 1 when the clock is known good. */
+uint8_t connectivity_sync_clock(void);
 
 connectivity_state_t connectivity_get_state(void);
 connectivity_error_t connectivity_get_last_error(void);

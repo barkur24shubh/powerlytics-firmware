@@ -122,6 +122,23 @@ static void print_telemetry_payload(const char *payload)
     print("\r\n[TELEMETRY_JSON_END]\r\n");
 }
 
+/* Network time -> RTC: on the first online pass, then every 6 h; retry
+ * every 60 s until the network has provided time. */
+#define CLOCK_SYNC_INTERVAL_MS  (6UL * 60UL * 60UL * 1000UL)
+#define CLOCK_SYNC_RETRY_MS     60000UL
+
+static void service_clock_sync_once(void)
+{
+    static uint8_t s_synced;
+    static uint32_t s_next_tick;
+    uint32_t now = HAL_GetTick();
+
+    if (s_next_tick != 0U && (int32_t)(now - s_next_tick) < 0) return;
+    s_synced = connectivity_sync_clock();
+    s_next_tick = now + (s_synced ? CLOCK_SYNC_INTERVAL_MS : CLOCK_SYNC_RETRY_MS);
+    if (s_next_tick == 0U) s_next_tick = 1U;
+}
+
 static uint8_t process_downlink_once(const char *tag)
 {
     char *rx = connectivity_read_downlink();
@@ -133,6 +150,8 @@ static uint8_t process_downlink_once(const char *tag)
               (unsigned long)strlen(rx));
         app_debug_led_event(DEBUG_LED_EVENT_DOWNLINK);
         connectivity_handle_downlink(rx);
+        /* Command acks go out now, ahead of anything else queued. */
+        (void)connectivity_flush_pending_acks();
         return 1U;
     }
 
@@ -154,6 +173,8 @@ static uint8_t wait_for_downlink_window(uint32_t window_ms)
             return 1U;
         }
 
+        /* Acks of commands run on arrival during the publish go out now. */
+        (void)connectivity_flush_pending_acks();
         (void)publish_event_once();
 
         osDelay(DOWNLINK_POLL_STEP_MS);
@@ -174,6 +195,20 @@ static telemetry_result_t publish_telemetry_once(void)
     {
         print("[PROVISION] telemetry skipped: waiting for valid config/apiKey\r\n");
         return TELEMETRY_RESULT_SKIPPED;
+    }
+
+    /* A normal publish keeps a 3 s gap after the previous one and used to
+     * sleep it out inside MQTT_Publish, during which nothing read the modem
+     * and commands waited. Wait it out here, still serving downlinks. */
+    for (;;)
+    {
+        uint32_t gap_ms = connectivity_publish_gap_remaining_ms();
+        if (gap_ms == 0U) break;
+        app_watchdog_mark_task(APP_WATCHDOG_TASK_RUNTIME);
+        app_watchdog_refresh();
+        (void)process_downlink_once("DOWNLINK BEFORE TELEMETRY");
+        (void)connectivity_flush_pending_acks();
+        osDelay((gap_ms < DOWNLINK_POLL_STEP_MS) ? gap_ms : DOWNLINK_POLL_STEP_MS);
     }
 
     const char *payload = app_build_payload_json_once();
@@ -420,6 +455,9 @@ static void app_gateway_online_idle_for(uint32_t wait_ms)
             continue;
         }
 
+        (void)connectivity_flush_pending_acks();
+        service_clock_sync_once();
+
         /*
          * The post-install trial confirmation fires 5 min after boot. Check it
          * here too, not only once per telemetry cycle, or OTA_CONFIRMED waits
@@ -475,7 +513,7 @@ void app_gateway_runtime_task(void *argument)
     uint32_t last_offline_diag_tick = 0U;
 
     app_watchdog_mark_task(APP_WATCHDOG_TASK_RUNTIME);
-    osDelay(5000);
+    osDelay(500);
     app_watchdog_mark_task(APP_WATCHDOG_TASK_RUNTIME);
     app_debug_led_run_once();
     app_watchdog_refresh();
@@ -544,6 +582,8 @@ void app_gateway_runtime_task(void *argument)
          */
         (void)connectivity_report_ota_boot_result_once();
         (void)publish_hello_once();
+        (void)connectivity_flush_pending_acks();
+        service_clock_sync_once();
 
         /*
          * Priority 1: downlink/config/command always wins.

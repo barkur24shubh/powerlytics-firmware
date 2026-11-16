@@ -8,6 +8,10 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifndef RELAY_FEEDBACK_SETTLE_MS
+#define RELAY_FEEDBACK_SETTLE_MS 30U
+#endif
+
 static const board_gpio_pin_t g_relays[] = BOARD_RELAY_PINS_INITIALIZER;
 
 #define RELAY_COUNT ((uint8_t)(sizeof(g_relays) / sizeof(g_relays[0])))
@@ -755,10 +759,14 @@ uint8_t app_relay_set_by_key(const char *port_key, uint8_t on)
 
 #if BOARD_RELAY_FEEDBACK_COUNT > 0U
     if ((uint8_t)idx < BOARD_RELAY_FEEDBACK_COUNT) {
-        print("[RELAY_FB] %s requested=%s feedback=%s (ack independent)\r\n",
+        /* The contact needs a few ms to move; reading in the same
+         * millisecond as the coil drive always showed the old state. */
+        HAL_Delay(RELAY_FEEDBACK_SETTLE_MS);
+        print("[RELAY_FB] %s requested=%s feedback=%s after %u ms (ack independent)\r\n",
               port_key,
               on ? "ON" : "OFF",
-              relay_feedback_read((uint8_t)idx) ? "ON" : "OFF");
+              relay_feedback_read((uint8_t)idx) ? "ON" : "OFF",
+              (unsigned)RELAY_FEEDBACK_SETTLE_MS);
     }
 #endif
 

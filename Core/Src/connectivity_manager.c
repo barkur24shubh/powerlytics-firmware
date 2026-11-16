@@ -169,6 +169,24 @@ uint8_t connectivity_poll_signal_quality(int32_t *rssi, int32_t *ber)
     return (b && b->poll_signal_quality) ? b->poll_signal_quality(rssi, ber) : 0U;
 }
 
+uint8_t connectivity_flush_pending_acks(void)
+{
+    const connectivity_backend_t *b = active_backend();
+    return (b && b->flush_pending_acks) ? b->flush_pending_acks() : 0U;
+}
+
+uint32_t connectivity_publish_gap_remaining_ms(void)
+{
+    const connectivity_backend_t *b = active_backend();
+    return (b && b->publish_gap_remaining_ms) ? b->publish_gap_remaining_ms() : 0U;
+}
+
+uint8_t connectivity_sync_clock(void)
+{
+    const connectivity_backend_t *b = active_backend();
+    return (b && b->sync_clock) ? b->sync_clock() : 0U;
+}
+
 connectivity_state_t connectivity_get_state(void)
 {
     const connectivity_backend_t *b = active_backend();

@@ -35,6 +35,17 @@
 
 void     modem_urc_init(uart2_rx_t *u2);
 
+/* Optional fast path. Called with each complete downlink payload (NUL-
+ * terminated, at most MODEM_URC_FAST_MAX - 1 bytes) the moment its block
+ * ends, from inside whichever reader saw it. Return 1 to consume it (it is
+ * then not queued), 0 to queue it as usual. Must not do modem I/O. Used to
+ * switch relays without waiting for the runtime to finish a publish. */
+#ifndef MODEM_URC_FAST_MAX
+#define MODEM_URC_FAST_MAX  512U
+#endif
+typedef uint8_t (*modem_urc_fast_handler_t)(const char *payload, size_t len);
+void     modem_urc_set_fast_handler(modem_urc_fast_handler_t fn);
+
 /* Queued downlinks, oldest first. Returns 1 and copies one payload
  * (NUL-terminated) when one is pending. */
 uint8_t  modem_urc_downlink_pending(void);

@@ -1493,6 +1493,15 @@ uint8_t MQTT_PublishPriority(const char *topic, const char *payload)
     return mqtt_publish_impl(topic, payload, 0U);
 }
 
+/* Time left before a normal (gap-enforcing) publish may start without
+ * sleeping. The runtime waits this out itself while still serving
+ * downlinks, instead of MQTT_Publish blocking the runtime task in osDelay. */
+uint32_t MQTT_PublishGapRemainingMs(void)
+{
+    uint32_t elapsed = HAL_GetTick() - s_last_mqtt_publish_attempt_tick;
+    return (elapsed < MQTT_PUBLISH_MIN_GAP_MS) ? (MQTT_PUBLISH_MIN_GAP_MS - elapsed) : 0U;
+}
+
 uint8_t MQTT_LastPublishAttempted(void)
 {
     return s_last_publish_attempted;
@@ -1624,12 +1633,53 @@ char* MQTT_Subscriber_Run(void)
     return s_mqtt_rx_payload;
 }
 
+/* Actuation acks are queued and retried until the broker accepts them.
+ * Before, each ack was published once, behind the 3 s publish gap, and a
+ * failed publish (or the 15 s cooldown after one) lost it: the relay had
+ * switched but the platform showed the command as unconfirmed. */
+#define ACT_ACK_OUTBOX_SLOTS     8U
+#define ACT_ACK_MAX_ATTEMPTS     30U
+#define ACT_ACK_PAYLOAD_MAX      192U
+#define ACT_RECENT_IDS           8U
+#define ACT_ID_MAX               40U
+
+typedef struct {
+    uint8_t used;
+    uint8_t attempts;
+    char    payload[ACT_ACK_PAYLOAD_MAX];
+} act_ack_slot_t;
+
+static act_ack_slot_t s_act_ack_outbox[ACT_ACK_OUTBOX_SLOTS];
+static uint8_t        s_act_ack_head;   /* oldest queued slot */
+static uint8_t        s_act_ack_count;
+
+/* Ids of actuations already executed, newest last, so a redelivered command
+ * (QoS 1 retry, broker redelivery after reconnect) is acked again but does
+ * not switch the relay a second time. */
+static char    s_act_recent_ids[ACT_RECENT_IDS][ACT_ID_MAX];
+static uint8_t s_act_recent_next;
+
+static uint8_t act_recent_contains(const char *id)
+{
+    if (!id || !id[0] || strcmp(id, "unknown") == 0) return 0U;
+    for (uint8_t i = 0U; i < ACT_RECENT_IDS; i++) {
+        if (strncmp(s_act_recent_ids[i], id, ACT_ID_MAX - 1U) == 0) return 1U;
+    }
+    return 0U;
+}
+
+static void act_recent_remember(const char *id)
+{
+    if (!id || !id[0] || strcmp(id, "unknown") == 0) return;
+    strncpy(s_act_recent_ids[s_act_recent_next], id, ACT_ID_MAX - 1U);
+    s_act_recent_ids[s_act_recent_next][ACT_ID_MAX - 1U] = '\0';
+    s_act_recent_next = (uint8_t)((s_act_recent_next + 1U) % ACT_RECENT_IDS);
+}
+
 static void publish_actuation_ack(const char *actuation_id,
                                   const char *status,
                                   const char *reason)
 {
-    char ack[256];
-
     if (!actuation_id || actuation_id[0] == '\0') {
         actuation_id = "unknown";
     }
@@ -1638,18 +1688,65 @@ static void publish_actuation_ack(const char *actuation_id,
         status = "FAILED";
     }
 
-    if (reason && reason[0]) {
-        snprintf(ack, sizeof(ack), "{\"type\":\"actuation_ack\",\"actuationId\":\"%s\",\"status\":\"%s\",\"reason\":\"%s\"}", actuation_id, status, reason);
-    } else {
-        snprintf(ack, sizeof(ack), "{\"type\":\"actuation_ack\",\"actuationId\":\"%s\",\"status\":\"%s\"}", actuation_id, status);
+    if (s_act_ack_count >= ACT_ACK_OUTBOX_SLOTS) {
+        /* Full: drop the oldest. Eight unsent acks means the link is down
+         * for a while; the newest outcome per relay matters most. */
+        print("[ACT][WARN] ack outbox full, dropping oldest\r\n");
+        app_log_push(APP_LOG_WARN, "ACT", "ACK_OUTBOX_FULL", "oldest ack dropped", 0, 0);
+        s_act_ack_outbox[s_act_ack_head].used = 0U;
+        s_act_ack_head = (uint8_t)((s_act_ack_head + 1U) % ACT_ACK_OUTBOX_SLOTS);
+        s_act_ack_count--;
     }
 
-    print("[ACT] acknowledgement sending actuationId=%s status=%s payloadLen=%lu\r\n",
+    uint8_t slot = (uint8_t)((s_act_ack_head + s_act_ack_count) % ACT_ACK_OUTBOX_SLOTS);
+    act_ack_slot_t *s = &s_act_ack_outbox[slot];
+
+    if (reason && reason[0]) {
+        snprintf(s->payload, sizeof(s->payload), "{\"type\":\"actuation_ack\",\"actuationId\":\"%s\",\"status\":\"%s\",\"reason\":\"%s\"}", actuation_id, status, reason);
+    } else {
+        snprintf(s->payload, sizeof(s->payload), "{\"type\":\"actuation_ack\",\"actuationId\":\"%s\",\"status\":\"%s\"}", actuation_id, status);
+    }
+    s->used = 1U;
+    s->attempts = 0U;
+    s_act_ack_count++;
+
+    print("[ACT] acknowledgement queued actuationId=%s status=%s payloadLen=%lu queued=%u\r\n",
           actuation_id,
           status,
-          (unsigned long)strlen(ack));
+          (unsigned long)strlen(s->payload),
+          (unsigned)s_act_ack_count);
+}
 
-    MQTT_Publish(topic_d2c_message, ack);
+/* Publish queued acks, oldest first, at priority (no 3 s gap). Returns the
+ * number still queued. Called by the runtime right after each downlink and
+ * at the top of every loop, before telemetry. */
+uint8_t MQTT_FlushActuationAcks(void)
+{
+    while (s_act_ack_count > 0U) {
+        act_ack_slot_t *s = &s_act_ack_outbox[s_act_ack_head];
+
+        uint8_t ok = MQTT_PublishPriority(topic_d2c_message, s->payload);
+        if (!ok) {
+            if (MQTT_LastPublishAttempted()) {
+                s->attempts++;
+            }
+            if (s->attempts >= ACT_ACK_MAX_ATTEMPTS) {
+                print("[ACT][ERR] ack dropped after %u attempts\r\n", (unsigned)s->attempts);
+                app_log_push(APP_LOG_ERROR, "ACT", "ACK_DROPPED", "ack not accepted after retries", s->attempts, 0);
+            } else {
+                print("[ACT][WARN] ack publish failed stage=%s attempts=%u, will retry\r\n",
+                      MQTT_LastPublishStage(), (unsigned)s->attempts);
+                break;
+            }
+        } else {
+            print("[ACT] acknowledgement published queued=%u\r\n", (unsigned)(s_act_ack_count - 1U));
+        }
+
+        s->used = 0U;
+        s_act_ack_head = (uint8_t)((s_act_ack_head + 1U) % ACT_ACK_OUTBOX_SLOTS);
+        s_act_ack_count--;
+    }
+    return s_act_ack_count;
 }
 
 static int64_t actuation_days_from_civil(int year, unsigned month, unsigned day)
@@ -1713,6 +1810,15 @@ static uint8_t handle_actuation_cjson(cJSON *root)
         return 1U;
     }
 
+    /* Redelivered command already executed: confirm again, do not re-run.
+     * Checked before expiry so a late redelivery of a command we did run is
+     * not reported as EXPIRED. */
+    if (act_recent_contains(id_str)) {
+        print("[ACT] duplicate actuationId=%s ignored, re-acking\r\n", id_str);
+        publish_actuation_ack(id_str, "ACKED", NULL);
+        return 1U;
+    }
+
     const char *expiry_status = "FAILED";
     const char *expiry_reason = "";
     if (!actuation_expiry_status(root, &expiry_status, &expiry_reason)) {
@@ -1743,6 +1849,7 @@ static uint8_t handle_actuation_cjson(cJSON *root)
 
     if (ok)
     {
+        act_recent_remember(id_str);
         publish_actuation_ack(id_str, "ACKED", NULL);
     }
     else
@@ -1751,6 +1858,38 @@ static uint8_t handle_actuation_cjson(cJSON *root)
     }
 
     return 1U;
+}
+
+/* Fast path for relay commands (see modem_urc_set_fast_handler): runs from
+ * inside the modem reader the moment the block ends, even in the middle of
+ * a telemetry publish, so a relay no longer waits for that publish to
+ * finish. Only actuation is taken here; it touches GPIO and queues its ack,
+ * no modem I/O. Everything else (config, OTA, unparsable) goes to the queue
+ * and the normal runtime path. */
+static uint8_t mqtt_fast_downlink(const char *payload, size_t len)
+{
+    if (len == 0U || !strstr(payload, "\"actuation\"")) return 0U;
+    if (s_ota_busy) return 0U;
+
+    cJSON *root = cJSON_Parse(payload);
+    if (!root) return 0U;
+
+    cJSON *msg = cJSON_GetObjectItem(root, "type");
+    const char *type_str = cJSON_IsString(msg) ? json_trimmed_str_or_empty(root, "type") : "";
+    if (!json_type_equals(type_str, "actuation")) {
+        cJSON_Delete(root);
+        return 0U;
+    }
+
+    print("[ACT] command handled on arrival\r\n");
+    handle_actuation_cjson(root);
+    cJSON_Delete(root);
+    return 1U;
+}
+
+void MQTT_InstallFastDownlinkHandler(void)
+{
+    modem_urc_set_fast_handler(mqtt_fast_downlink);
 }
 
 void handle_downlink_cjson(const char *payload_str)

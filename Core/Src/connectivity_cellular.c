@@ -97,6 +97,21 @@ static uint8_t cellular_poll_signal_quality(int32_t *rssi, int32_t *ber)
     return modem_get_signal_quality(rssi, ber);
 }
 
+static uint8_t cellular_flush_pending_acks(void)
+{
+    return MQTT_FlushActuationAcks();
+}
+
+static uint32_t cellular_publish_gap_remaining_ms(void)
+{
+    return MQTT_PublishGapRemainingMs();
+}
+
+static uint8_t cellular_sync_clock(void)
+{
+    return modem_sync_rtc_from_network();
+}
+
 static connectivity_state_t cellular_get_state(void)
 {
     return comm_manager_get_state();
@@ -144,6 +159,9 @@ const connectivity_backend_t *connectivity_cellular_backend(void)
         .ota_is_busy = cellular_ota_is_busy,
         .report_ota_boot_result_once = cellular_report_ota_boot_result_once,
         .poll_signal_quality = cellular_poll_signal_quality,
+        .flush_pending_acks = cellular_flush_pending_acks,
+        .publish_gap_remaining_ms = cellular_publish_gap_remaining_ms,
+        .sync_clock = cellular_sync_clock,
         .get_state = cellular_get_state,
         .get_last_error = cellular_get_last_error,
         .get_health = cellular_get_health,

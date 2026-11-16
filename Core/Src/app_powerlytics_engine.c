@@ -1144,9 +1144,18 @@ const char *app_powerlytics_engine_build_telemetry(void)
 #define BOARD_RELAY_COUNT 5U
 #endif
   for (uint8_t i = 0U; i < BOARD_RELAY_COUNT; i++) {
+    /* Relay outputs are reported even when their point is disabled: a
+     * relay can still be switched while "inactive", and this report is how
+     * the platform learns the real output state (after a reboot the relays
+     * come up OFF while the platform still holds the last acked state). The
+     * platform never gates relay reports by port status. */
     powerlytics_point_cfg_t tmp;
-    const powerlytics_point_cfg_t *p = point_or_default("RO_", i, POWERLYTICS_POINT_RELAY, &tmp);
-    if (!p || p->kind != POWERLYTICS_POINT_RELAY) continue;
+    const powerlytics_point_cfg_t *p = find_channel_point_any("RO_", i);
+    if (!p) {
+      make_default_point(&tmp, "RO_", i, POWERLYTICS_POINT_RELAY);
+      p = &tmp;
+    }
+    if (p->kind != POWERLYTICS_POINT_RELAY) continue;
     if (!first) jb_append(s_telemetry_json, ENGINE_JSON_MAX, &idx, ",");
     first = 0U;
     jb_append(s_telemetry_json, ENGINE_JSON_MAX, &idx, "\"%s\":{\"last\":%u}",
