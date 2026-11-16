@@ -143,75 +143,128 @@ size_t u2rx_read(uart2_rx_t *u2, uint8_t *out, size_t max)
 void u2rx_drop_all(uart2_rx_t *u2)
 {
     u2->rd = u2->wr;
+    u2->line_len = 0U;
+    u2->line[0] = 0;
 }
 
-/* Read a CRLF-terminated line into out (without CRLF). Returns length or -1 timeout. */
+void u2rx_set_line_hook(uart2_rx_t *u2, u2rx_line_hook_t hook)
+{
+    if (u2) u2->line_hook = hook;
+}
+
+/* ---------------- line assembler ----------------
+ * One assembler for every line-level reader. Before this, each reader kept
+ * its own temporary buffer and threw it away on return or timeout, so an
+ * unsolicited modem message (for example an MQTT downlink) that arrived
+ * while another part of the firmware was reading was silently lost. */
+
+static void u2rx_line_reset(uart2_rx_t *u2)
+{
+    u2->line_len = 0U;
+    u2->line[0] = 0;
+}
+
+/* Returns 1 when u2->line holds a complete, non-empty line (no CR/LF). */
+static uint8_t u2rx_line_feed(uart2_rx_t *u2, uint8_t ch)
+{
+    if (ch == '\r') return 0U;
+    if (ch == '\n') {
+        return (u2->line_len > 0U) ? 1U : 0U;
+    }
+    if (u2->line_len < (U2RX_LINE_MAX - 1U)) {
+        u2->line[u2->line_len++] = (char)ch;
+        u2->line[u2->line_len] = 0;
+    }
+    return 0U;
+}
+
+/* Offer a complete line to the hook. Returns 1 (and clears the line) when
+ * the hook consumed it. */
+static uint8_t u2rx_line_offer(uart2_rx_t *u2)
+{
+    if (!u2->line_hook || u2->in_hook) return 0U;
+    u2->in_hook = 1U;
+    uint8_t used = u2->line_hook(u2, u2->line);
+    u2->in_hook = 0U;
+    if (used) u2rx_line_reset(u2);
+    return used;
+}
+
+/* On a reader timeout keep a partial line that may be the start of an
+ * unsolicited message ('+...'), so the next reader completes it instead of
+ * seeing its tail as garbage. Anything else (a '>' prompt) is dropped. */
+static void u2rx_line_settle(uart2_rx_t *u2)
+{
+    if (u2->line_len > 0U && u2->line[0] != '+') {
+        u2rx_line_reset(u2);
+    }
+}
+
+static void u2rx_wait_data(uart2_rx_t *u2, uint32_t t0, uint32_t timeout_ms)
+{
+    uint32_t elapsed = HAL_GetTick() - t0;
+    uint32_t remain = (elapsed < timeout_ms) ? (timeout_ms - elapsed) : 0U;
+    uint32_t slice = (remain > 50U) ? 50U : remain;
+    if (slice == 0U) return;
+    if (u2->rxSem) (void)osSemaphoreAcquire(u2->rxSem, slice);
+    else osDelay(1);
+}
+
+void u2rx_drain(uart2_rx_t *u2)
+{
+    if (!u2) return;
+    uint8_t ch;
+    while (u2rx_read(u2, &ch, 1U) == 1U) {
+        if (u2rx_line_feed(u2, ch)) {
+            if (!u2rx_line_offer(u2)) u2rx_line_reset(u2);
+        }
+    }
+    u2rx_line_settle(u2);
+}
+
+/* Read a CRLF-terminated line into out (without CRLF). Returns length, or 0
+ * on timeout. A partial line is returned on timeout only when it cannot be
+ * the start of an unsolicited message (for example the "> " data prompt). */
 int u2rx_read_line(uart2_rx_t *u2, char *out, int out_sz, uint32_t timeout_ms)
 {
     if (!u2 || !out || out_sz <= 1) return 0;
-
-    uint32_t t0 = HAL_GetTick();
-    int idx = 0;
     out[0] = 0;
 
-#if U2RX_DEBUG
-    U2RX_DBG_PRINT("[RL] start timeout=%lu avail=%lu\r\n",
-                   (unsigned long)timeout_ms, (unsigned long)u2rx_available(u2));
-#endif
-
-    while ((HAL_GetTick() - t0) < timeout_ms) {
-
-        /* If nothing available, block briefly on semaphore (efficient) */
-        if (u2rx_available(u2) == 0) {
-            if (u2->rxSem) (void)osSemaphoreAcquire(u2->rxSem, 50);
-            else osDelay(1);
-            continue;
-        }
-
+    uint32_t t0 = HAL_GetTick();
+    for (;;) {
         uint8_t ch;
-        size_t r = u2rx_read(u2, &ch, 1);
-        if (r == 0) {
-            osDelay(1);
-            continue;
+        while (u2rx_read(u2, &ch, 1U) == 1U) {
+            if (!u2rx_line_feed(u2, ch)) continue;
+            if (u2rx_line_offer(u2)) continue;
+
+            int n = (int)u2->line_len;
+            if (n > out_sz - 1) n = out_sz - 1;
+            memcpy(out, u2->line, (size_t)n);
+            out[n] = 0;
+            u2rx_line_reset(u2);
+            U2RX_DBG_PRINT("[RL] line len=%d '%s'\r\n", n, out);
+            return n;
         }
 
-#if U2RX_DEBUG
-        if (ch == '\n' || ch == '\r' || ch == 'O' || ch == 'K' || ch == '+') {
-            U2RX_DBG_PRINT("[RL] ch=0x%02X '%c' idx=%d\r\n",
-                           (unsigned)ch, (ch >= 32 && ch <= 126) ? ch : '.', idx);
-        }
-#endif
-
-        if (ch == '\r') continue;
-
-        if (ch == '\n') {
-            if (idx == 0) continue;  /* skip empty lines */
-            out[idx] = 0;
-#if U2RX_DEBUG
-            U2RX_DBG_PRINT("[RL] EOL return len=%d text='%s'\r\n", idx, out);
-#endif
-            return idx;
-        }
-
-        if (idx < out_sz - 1) out[idx++] = (char)ch;
+        if ((HAL_GetTick() - t0) >= timeout_ms) break;
+        u2rx_wait_data(u2, t0, timeout_ms);
     }
 
-    /* IMPORTANT: return partial line if we collected something */
-    if (idx > 0) {
-        out[idx] = 0;
-#if U2RX_DEBUG
-        U2RX_DBG_PRINT("[RL] TIME return PARTIAL len=%d text='%s'\r\n", idx, out);
-#endif
-        return idx;
+    if (u2->line_len > 0U && u2->line[0] != '+') {
+        int n = (int)u2->line_len;
+        if (n > out_sz - 1) n = out_sz - 1;
+        memcpy(out, u2->line, (size_t)n);
+        out[n] = 0;
+        u2rx_line_reset(u2);
+        U2RX_DBG_PRINT("[RL] partial len=%d '%s'\r\n", n, out);
+        return n;
     }
-
-#if U2RX_DEBUG
-    U2RX_DBG_PRINT("[RL] TIME return 0\r\n");
-#endif
     return 0;
 }
 
-/* Wait until needle appears anywhere in stream (scans a moving window). */
+/* Wait until needle appears in the stream (moving window over bytes read by
+ * this call). Complete lines seen on the way are offered to the line hook,
+ * so unsolicited messages are captured rather than discarded. */
 int u2rx_wait_for(uart2_rx_t *u2, const char *needle, uint32_t timeout_ms)
 {
     if (!needle || !needle[0]) return 1;
@@ -224,32 +277,98 @@ int u2rx_wait_for(uart2_rx_t *u2, const char *needle, uint32_t timeout_ms)
     size_t wlen = 0;
 
     uint32_t t0 = HAL_GetTick();
-    while ((HAL_GetTick() - t0) < timeout_ms) {
+    for (;;) {
         app_watchdog_mark_task(APP_WATCHDOG_TASK_RUNTIME);
         app_debug_led_run_once();
         app_watchdog_refresh();
 
-        if (u2rx_available(u2) == 0) {
-            if (u2->rxSem) (void)osSemaphoreAcquire(u2->rxSem, 50);
-            continue;
-        }
-
         uint8_t ch;
-        u2rx_read(u2, &ch, 1);
+        while (u2rx_read(u2, &ch, 1U) == 1U) {
+            if (u2rx_line_feed(u2, ch)) {
+                if (u2rx_line_offer(u2)) {
+                    continue;
+                }
+                u2rx_line_reset(u2);
+            }
 
-        if (wlen < sizeof(win) - 1) {
-            win[wlen++] = (char)ch;
-            win[wlen] = 0;
-        } else {
-            memmove(win, win + 1, sizeof(win) - 2);
-            win[sizeof(win) - 2] = (char)ch;
-            win[sizeof(win) - 1] = 0;
+            if (wlen < sizeof(win) - 1) {
+                win[wlen++] = (char)ch;
+                win[wlen] = 0;
+            } else {
+                memmove(win, win + 1, sizeof(win) - 2);
+                win[sizeof(win) - 2] = (char)ch;
+                win[sizeof(win) - 1] = 0;
+            }
+
+            if (wlen >= N && memcmp(&win[wlen - N], needle, N) == 0) {
+                /* As before: what was read up to the match is consumed, the
+                 * rest of the line stays in the ring for the next reader. */
+                u2rx_line_reset(u2);
+                return 1;
+            }
         }
 
-        if (strstr(win, needle)) return 1;
+        if ((HAL_GetTick() - t0) >= timeout_ms) break;
+        u2rx_wait_data(u2, t0, timeout_ms);
     }
 
+    u2rx_line_settle(u2);
     return 0;
+}
+
+/* ---------------- raw helpers for line hooks ---------------- */
+
+int u2rx_read_line_raw(uart2_rx_t *u2, char *out, int out_sz, uint32_t timeout_ms)
+{
+    if (!u2 || !out || out_sz <= 1) return 0;
+    out[0] = 0;
+    int idx = 0;
+    uint32_t t0 = HAL_GetTick();
+    for (;;) {
+        uint8_t ch;
+        while (u2rx_read(u2, &ch, 1U) == 1U) {
+            if (ch == '\r') continue;
+            if (ch == '\n') {
+                if (idx == 0) continue;
+                out[idx] = 0;
+                return idx;
+            }
+            if (idx < out_sz - 1) out[idx++] = (char)ch;
+        }
+        if ((HAL_GetTick() - t0) >= timeout_ms) break;
+        app_watchdog_mark_task(APP_WATCHDOG_TASK_RUNTIME);
+        app_watchdog_refresh();
+        u2rx_wait_data(u2, t0, timeout_ms);
+    }
+    out[idx] = 0;
+    return 0;
+}
+
+int u2rx_read_exact_raw(uart2_rx_t *u2, uint8_t *dst, int want, uint32_t timeout_ms)
+{
+    if (!u2 || want <= 0) return 0;
+    int got = 0;
+    uint32_t t0 = HAL_GetTick();
+    while (got < want) {
+        size_t avail = u2rx_available(u2);
+        if (avail > 0U) {
+            size_t take = avail;
+            if (take > (size_t)(want - got)) take = (size_t)(want - got);
+            if (dst) {
+                got += (int)u2rx_read(u2, dst + got, take);
+            } else {
+                uint8_t sink[64];
+                if (take > sizeof(sink)) take = sizeof(sink);
+                got += (int)u2rx_read(u2, sink, take);
+            }
+            continue;
+        }
+        if ((HAL_GetTick() - t0) >= timeout_ms) break;
+        app_watchdog_mark_task(APP_WATCHDOG_TASK_RUNTIME);
+        app_watchdog_refresh();
+        u2rx_wait_data(u2, t0, timeout_ms);
+    }
+    return got;
 }
 
 /* Utility: wait for start_tag then copy bytes until end_tag into out */

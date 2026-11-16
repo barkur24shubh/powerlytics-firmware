@@ -54,6 +54,7 @@
 
 /* Cellular modem */
 #include "uart2_rx_engine.h"
+#include "modem_urc.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -773,6 +774,7 @@ int main(void)
 #if BOARD_HAS_CELLULAR
   u2RxSemHandle = osSemaphoreNew(1, 0, NULL);
   u2rx_init(&g_u2rx, MODEM_UART_HANDLE, u2RxSemHandle);
+  modem_urc_init(&g_u2rx);
 
   if (u2rx_start(&g_u2rx) != HAL_OK)
   {

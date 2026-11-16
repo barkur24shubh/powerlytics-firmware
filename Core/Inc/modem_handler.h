@@ -26,6 +26,11 @@ uint8_t  SendCommandWithRetry(const char *cmd, const char *expected, uint16_t ti
 
 void ModemAT_InitMutex(void);
 
+/* Take any pending modem output through the unsolicited-message hook,
+ * waiting up to wait_ms for a downlink. Safe to call often; returns at once
+ * if another task is mid AT exchange. */
+void modem_rx_service(uint32_t wait_ms);
+
 uint8_t  modem_at_rx_is_active(void);
 void     modem_at_rx_feed(const uint8_t *data, uint16_t len);
 

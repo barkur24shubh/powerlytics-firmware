@@ -9,6 +9,7 @@
 #include "app_watchdog.h"
 #include "sha256.h"
 #include "ota_root_ca.h"
+#include "modem_urc.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -71,6 +72,37 @@ static void u2_flush_all(void)
     u2rx_drop_all(&g_u2rx);
     at_rx_len = 0;
     at_rx_buf[0] = 0;
+}
+
+/* Clear stale AT output before a command without losing unsolicited
+ * messages: pending bytes go through the line hook (MQTT downlinks are
+ * queued, disconnect notices latched) and only unclaimed lines are dropped.
+ * The raw drop above stays for HTTP/OTA paths, where MQTT is stopped and the
+ * buffer may hold binary data. */
+static void u2_drain_pending(void)
+{
+    u2rx_drain(&g_u2rx);
+    at_rx_len = 0;
+    at_rx_buf[0] = 0;
+}
+
+void modem_rx_service(uint32_t wait_ms)
+{
+    /* Someone else is mid AT exchange: their reads feed the hook already. */
+    if (g_at_mutex && osMutexAcquire(g_at_mutex, 0U) != osOK) return;
+
+    u2rx_drain(&g_u2rx);
+    if (wait_ms > 0U && !modem_urc_downlink_pending()) {
+        uint32_t t0 = HAL_GetTick();
+        while (!modem_urc_downlink_pending() && (HAL_GetTick() - t0) < wait_ms) {
+            uint32_t left = wait_ms - (HAL_GetTick() - t0);
+            if (g_u2rx.rxSem) (void)osSemaphoreAcquire(g_u2rx.rxSem, (left > 50U) ? 50U : left);
+            else osDelay(1);
+            u2rx_drain(&g_u2rx);
+        }
+    }
+
+    if (g_at_mutex) osMutexRelease(g_at_mutex);
 }
 
 static void trim_crlf(char *s)
@@ -2070,7 +2102,7 @@ uint8_t SIM800_SendATCommand2(const char *cmd,
     at_rx_active = 1;
 
     if (flush_rx) {
-        u2_flush_all();
+        u2_drain_pending();
         AT_TRACE_LOG("[AT] RX flushed\r\n");
     }
 
@@ -2465,7 +2497,7 @@ uint8_t modem_get_signal_quality(int32_t *rssi, int32_t *ber)
     if (g_at_mutex) osMutexAcquire(g_at_mutex, osWaitForever);
 
     at_rx_active = 1;
-    u2_flush_all();
+    u2_drain_pending();
     print("[MODEM] CSQ query\r\n");
     u2_send_cmd("AT+CSQ");
 

@@ -33,6 +33,7 @@
 "./Core/Src/modbus_rtu.o"
 "./Core/Src/modbus_rtu_master.o"
 "./Core/Src/modem_handler.o"
+"./Core/Src/modem_urc.o"
 "./Core/Src/mqtt_config.o"
 "./Core/Src/mqtt_handler.o"
 "./Core/Src/pub_queue.o"

@@ -23,7 +23,16 @@
 #define APP_OTA_RESULT_NONE           0xFFFFFFFFUL
 #define APP_OTA_RESULT_INSTALLED      0x494E5354UL /* INST */
 #define APP_OTA_RESULT_FAILED         0x4641494CUL /* FAIL */
-#define APP_OTA_RESULT_ROLLED_BACK    0x52424B31UL /* RBK1 */
+/*
+ * Rolled back. The result word lives on NOR flash and is only ever programmed
+ * (bits 1 -> 0), never erased, so a later result must be a bit-subset of the
+ * one it overwrites. Rollback always follows INSTALLED ("INST", 0x494E5354);
+ * the old value "RBK1" (0x52424B31) programmed over it read back as
+ * 0x40424310, which nothing recognised, so rollbacks were never reported.
+ * 0x40424310 is exactly INST & RBK1: it can be written over INST cleanly, and
+ * units already rolled back by an older bootloader hold this same value.
+ */
+#define APP_OTA_RESULT_ROLLED_BACK    0x40424310UL /* INST & "RBK1" */
 #define APP_OTA_BACKUP_VALID          0x42555056UL /* BUPV */
 #define APP_OTA_TRIAL_CONFIRMED       0x434F4E46UL /* CONF */
 #define APP_OTA_ROLLBACK_REQUESTED    0x52424B51UL /* RBKQ */

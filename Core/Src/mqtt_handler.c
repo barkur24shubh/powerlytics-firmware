@@ -13,6 +13,7 @@
 #include "app_board_io.h"
 #include "debug_uart.h"
 #include "modem_handler.h"
+#include "modem_urc.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
@@ -63,10 +64,7 @@ uint8_t SendCommandWithRetry(const char *cmd, const char *expected, uint16_t tim
 
 #define MQTT_MAX_PAYLOAD (1024U * 8U)
 #define CONFIG_HASH_HEX_LEN                  64U
-#define MQTT_RX_MIN_PAYLOAD_TIMEOUT_MS       30000UL
-#define MQTT_RX_TIMEOUT_PER_BYTE_MS          5UL
-#define MQTT_RX_MAX_PAYLOAD_TIMEOUT_MS       60000UL
-#define MQTT_RX_END_TIMEOUT_MS               5000UL
+#define MQTT_RX_POLL_WAIT_MS                 100UL
 
 #define MQTT_CONNECT_CMD_OK_TIMEOUT_MS      30000UL
 #define MQTT_CONNECT_URC_TIMEOUT_MS         45000UL
@@ -723,11 +721,21 @@ uint8_t MQTT_ReportOtaBootResultOnce(void)
         manifest.install_result == APP_OTA_RESULT_ROLLED_BACK) {
         ota_copy_manifest_string(s_ota_rollback_version, sizeof(s_ota_rollback_version), manifest.rollback_version);
         const uint8_t rolled_back = manifest.install_result == APP_OTA_RESULT_ROLLED_BACK;
+        /*
+         * After INSTALLED the error word is already 0 (ERR_NONE), so the
+         * bootloader's rollback error code cannot be programmed over it. Tell
+         * a manual rollback from a failed trial by the rollback-request marker.
+         */
+        const char *reason = rolled_back
+            ? (manifest.rollback_requested == APP_OTA_ROLLBACK_REQUESTED
+                   ? ota_boot_error_reason(APP_OTA_ERR_MANUAL_ROLLBACK)
+                   : ota_boot_error_reason(APP_OTA_ERR_TRIAL_EXHAUSTED))
+            : ota_boot_error_reason(manifest.install_error);
         ok = publish_ota_status((const char *)manifest.deployment_id,
                                 rolled_back ? "OTA_ROLLED_BACK" : "OTA_INSTALL_FAILED",
                                 "BOOT", 100,
                                 (const char *)manifest.target_version,
-                                ota_boot_error_reason(manifest.install_error));
+                                reason);
         comm_manager_report_publish_result(ok);
         if (ok) {
             (void)ota_clear_manifest();
@@ -1224,6 +1232,8 @@ uint8_t MQTT_Connect(const char *host, int port, const char *user, const char *p
     }
 
     print("[MQTT] connected\r\n");
+    /* Disconnect notices from the previous session are stale now. */
+    modem_urc_clear_disconnect_flags();
     lastMQTTSuccessTime = HAL_GetTick();
     s_consecutive_mqtt_connect_fail = 0;
     return 1;
@@ -1495,7 +1505,15 @@ const char *MQTT_LastPublishStage(void)
 
 uint8_t MQTT_CheckDisconnectURC(void)
 {
-    if (u2rx_wait_for(&g_u2rx, "+CMQTTCONNLOST", 10)) {
+    /*
+     * Disconnect notices are latched by the modem URC hook whichever reader
+     * sees them. This used to scan the serial stream directly, which also
+     * consumed (and lost) any MQTT downlink arriving in that window.
+     */
+    modem_rx_service(0U);
+    uint32_t flags = modem_urc_take_disconnect_flags();
+
+    if (flags & MODEM_URC_FLAG_MQTT_CONN_LOST) {
         app_log_critical(APP_LOG_ERROR,
                          "MQTT",
                          "CONN_LOST_URC",
@@ -1508,7 +1526,7 @@ uint8_t MQTT_CheckDisconnectURC(void)
         return 1;
     }
 
-    if (u2rx_wait_for(&g_u2rx, "+PDP DEACT", 10)) {
+    if (flags & MODEM_URC_FLAG_PDP_DEACT) {
         app_log_critical(APP_LOG_ERROR,
                          "MQTT",
                          "PDP_DEACT_URC",
@@ -1521,7 +1539,7 @@ uint8_t MQTT_CheckDisconnectURC(void)
         return 1;
     }
 
-    if (u2rx_wait_for(&g_u2rx, "+CGEV: ME PDN DEACT", 10)) {
+    if (flags & MODEM_URC_FLAG_PDN_DEACT) {
         app_log_critical(APP_LOG_ERROR,
                          "MQTT",
                          "PDN_DEACT_URC",
@@ -1583,93 +1601,27 @@ void mqttPublishf(const char *fmt, ...)
    Subscriber Logic (UNCHANGED)
    ========================================================= */
 
-static int parse_reported_len(const char *line)
-{
-    const char *last = strrchr(line, ',');
-    if (!last) return -1;
-    int n = 0;
-    last++;
-    while (*last == ' ') last++;
-    while (*last >= '0' && *last <= '9') {
-        n = (n * 10) + (*last - '0');
-        last++;
-    }
-    return (n > 0) ? n : -1;
-}
-
-static int u2_read_exact(uint8_t *dst, int want, uint32_t timeout_ms)
-{
-    uint32_t t0 = HAL_GetTick();
-    int got = 0;
-    while (got < want && (HAL_GetTick() - t0) < timeout_ms) {
-        app_watchdog_mark_task(APP_WATCHDOG_TASK_RUNTIME);
-        app_debug_led_run_once();
-        app_watchdog_refresh();
-
-        size_t avail = u2rx_available(&g_u2rx);
-        if (avail == 0) {
-            if (g_u2rx.rxSem) {
-                (void)osSemaphoreAcquire(g_u2rx.rxSem, 100);
-            } else {
-                osDelay(1);
-            }
-            continue;
-        }
-        size_t take = avail;
-        if (take > (size_t)(want - got)) take = (size_t)(want - got);
-        got += (int)u2rx_read(&g_u2rx, dst + got, take);
-    }
-    return got;
-}
-
 char* MQTT_Subscriber_Run(void)
 {
-    char *payload = s_mqtt_rx_payload;
+    /*
+     * Downlinks are captured into a queue by the modem URC hook as soon as
+     * any reader meets them (AT command, publish, signal poll, this call).
+     * Here we only service the serial stream briefly and pop the oldest one.
+     */
+    size_t len = 0U;
 
-    // 1. Wait for the header (don't clear buffer yet)
-    if (!u2rx_wait_for(&g_u2rx, "+CMQTTRXPAYLOAD:", 100)) return NULL;
+    if (!modem_urc_downlink_pending()) {
+        modem_rx_service(MQTT_RX_POLL_WAIT_MS);
+    }
 
-    // 2. Read ONLY the header line to get the length
-    char line[128];
-    int n = u2rx_read_line(&g_u2rx, line, sizeof(line), 500);
-    if (n <= 0) return NULL;
-
-    // 3. Extract the exact length (e.g., 545 from "+CMQTTRXPAYLOAD: 0,545")
-    int reported_len = parse_reported_len(line);
-    if (reported_len <= 0) return NULL;
-
-    if (reported_len >= (int)MQTT_MAX_PAYLOAD) {
-        print("[MQTT RX][ERR] payload too large: %d max=%u\r\n",
-              reported_len,
-              (unsigned)MQTT_MAX_PAYLOAD);
-        (void)u2rx_wait_for(&g_u2rx, "+CMQTTRXEND", 500);
+    if (!modem_urc_pop_downlink(s_mqtt_rx_payload, sizeof(s_mqtt_rx_payload), &len)) {
         return NULL;
     }
 
-    uint32_t payload_timeout_ms = MQTT_RX_MIN_PAYLOAD_TIMEOUT_MS +
-                                  ((uint32_t)reported_len * MQTT_RX_TIMEOUT_PER_BYTE_MS);
-    if (payload_timeout_ms > MQTT_RX_MAX_PAYLOAD_TIMEOUT_MS) {
-        payload_timeout_ms = MQTT_RX_MAX_PAYLOAD_TIMEOUT_MS;
-    }
-
-    // 4. Read the EXACT number of bytes.
-    // Do NOT use read_line here. Newlines in JSON will break it.
-    int got = u2_read_exact((uint8_t*)payload, reported_len, payload_timeout_ms);
-    payload[got] = 0; // Manual null termination
-
-    // 5. Check for footer
-    (void)u2rx_wait_for(&g_u2rx, "+CMQTTRXEND", MQTT_RX_END_TIMEOUT_MS);
-
-    print("[MQTT RX] downlink payload read len=%d expected=%d timeout=%lu\r\n",
-          got,
-          reported_len,
-          (unsigned long)payload_timeout_ms);
-    if (got != reported_len) {
-        print("[MQTT RX][ERR] incomplete payload discarded\r\n");
-        return NULL;
-    }
-
-    return payload;
+    print("[MQTT RX] downlink payload read len=%lu still_queued=%u\r\n",
+          (unsigned long)len,
+          (unsigned)modem_urc_downlink_pending());
+    return s_mqtt_rx_payload;
 }
 
 static void publish_actuation_ack(const char *actuation_id,
