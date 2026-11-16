@@ -454,17 +454,15 @@ static uint8_t event_push_json(const char *source,
                                float previous,
                                float threshold)
 {
-  uint8_t cap = s_cfg.event_cap_per_interval ? s_cfg.event_cap_per_interval : POWERLYTICS_DEFAULT_EVENT_CAP;
 
   char ts[40];
   rtc_get_datetime_strings(ts, sizeof(ts));
 
   app_watchdog_force_refresh();
+  /* No per-interval event cap: every edge is queued and sent on its own,
+   * ahead of telemetry. Only a full queue holds an event back (DI edges
+   * stay pending and are retried). eventCapPerInterval is ignored. */
   uint32_t primask = critical_enter();
-  if (s_events_this_interval >= cap) {
-    critical_exit(primask);
-    return 0U;
-  }
 
   uint8_t next = (uint8_t)((s_event_w + 1U) % ENGINE_EVENT_QUEUE);
   if (next == s_event_r) {
