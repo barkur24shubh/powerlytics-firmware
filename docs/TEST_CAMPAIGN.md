@@ -127,7 +127,55 @@ Root cause of C1: **not the radio link.** The board received every byte correctl
 | C6 error acks by configId | Platform uses the deploymentId when valid (imei-checked) | backend tests ✅ |
 | C7 rollback restores old config | Config no longer in the region the bootloader backs up | by design ✅ |
 | C8 period = interval + publish | Wait counted from cycle start | 10 s setting → 9.9–10.4 s ✅ (was 16–19 s) |
-| C9 UI gaps | Deploy panel lists what will change; edit page: input sampling, debounce, counter width | backend/frontend checks pass; UI not yet seen (sign-in expired) |
+| C9 UI gaps | Deploy panel lists what will change; edit page: input sampling, debounce, counter width | Seen in the UI: panel listed `sampleIntervalMs 50 → 100` and `DI_1 debounceMs (none) → 20`; deployed, board applied 100 ms sampling ✅ |
 | C10 telemetry can't name its config | `configHash` (16 hex) in telemetry, stored by the platform | seen in telemetry ✅; platform storage covered by tests |
 
 Also learned: the bootloader must be built with `OTA_SIGNING_PUBLIC_KEY_HEX` set (16 KB with the Ed25519 code); built without it, every OTA install is refused. The bench bootloader was rebuilt with the key derived from the local signing key. The earlier missing USB log lines were because the owner also had the port open.
+
+## 4. Downlink speed and priority (2026-11-17, firmware 1.0.6)
+
+Method: commands sent through the real API from the signed-in local UI (alternating RO_1/RO_2, each relay toggling); "relay switched" is the board's `[ACT] acknowledgement queued actuationId=…` line minus 30 ms (it is logged 30 ms after the GPIO is driven); the API and the USB log share this Mac's clock. The actuation list API returns only the newest 100 commands, so platform status is known for the last 100 of a run; board execution is checked for every command.
+
+| Test | Result | Notes |
+|---|---|---|
+| [E2E] Click → physical action p50/p95/p99 | **pass** | 10 s interval, 40 cmds: 0.52 / 0.77 / 0.84 s (max 0.86). Soak at 5 s, 496 cmds: 0.47 / 0.73 / 1.07 s (max 2.23). Click → ACKED: 1.87–1.89 / 2.11–2.56 / 2.29–2.84 s. The relay usually switches before the API call has even returned (0.44–0.49 s). |
+| [E2E] Latency at 5 s / 60 s / 1 h interval | partly | 5 s and 10 s same (commands run on arrival, independent of telemetry). 60 s / 1 h not run yet. |
+| [E2E] Zero missed commands with traffic, 500+ | **partly** | 496 sent, **496/496 executed on the board, none lost**; last 100: 93 ACKED, 7 SUPERSEDED (ack took > 2.6 s, the next command for that relay had already come). **But 4 more were refused by the platform as "Device is offline" (22:00)** — see E1/E2. |
+| [FW] Downlink beats pending uplink | **pass, too well** | Commands run on arrival even mid-publish. But see E1: a steady stream of commands starves telemetry. |
+| [E2E] Burst of 20 in 2 s, order kept, all acked | not run yet | Needs direct MQTT (the API allows one command per relay per second); script ready (`burst.mjs`). |
+| [E2E] Command during config flash write | earlier pass (1.0.4, B6) | Config save now ~1.2 s on W25Q; to rerun on 1.0.6. |
+| [E2E] Command during reconnect | known gap | Clean MQTT session: commands sent before the unit resubscribes are dropped by the broker (seen today at 21:26). Parked earlier (persistent session). |
+| [E2E] Command during Modbus poll | not run | No Modbus slave on the bench. |
+| [E2E] Command during OTA download | **fail (code review)** | The OTA download runs inside the task that executes downlinks; relay commands arriving meanwhile are queued, not run, and lost if the OTA then resets the unit to install; the platform shows them TIMED_OUT 2 min later. The platform does not refuse commands while an OTA is in progress. |
+
+### Findings
+
+- **E1 (high) A steady stream of relay commands starves telemetry and health.** Every publish, priority acks included, resets the timer that the telemetry path waits on for its 3 s gap (`mqtt_handler.c` `s_last_mqtt_publish_attempt_tick`); with an ack every ~1.2 s the gap never came. Board log: `cycle work 409029 ms` — no telemetry and no health for ~7 min during the soak. Fix: cap the wait (telemetry goes out at most one gap after it is due), or keep acks from pushing back normal publishes.
+- **E2 The platform marked the unit offline while it was acking commands.** Presence comes only from telemetry/health/hello; with a 5 s interval the grace is 10 s, so E1 made it refuse 4 commands as "Device is offline". Fix: any inbound message (acks included) counts as presence.
+- **E3 Commands during an OTA are silently lost.** Fix: platform refuses relay commands while the device has an OTA in a non-terminal state (409 `OTA_IN_PROGRESS`, UI shows why); optionally the unit answers FAILED `ota_in_progress`.
+- **E4 The actuation list API returns only the newest 100**, with no paging; history of a busy relay cannot be read back (also limits section 6 "relay history").
+- **E5 SUPERSEDED hides a successful command.** 7 commands executed and were acked, but the platform shows SUPERSEDED because the next command arrived first; the ack is ignored. Accurate in intent, but the history then never shows that they ran.
+
+### Section 4 fixes (firmware 1.0.7, backend `feature/admin-boot-info`), retested 2026-11-17 22:21–22:44 IST
+
+| Finding | Fix | Retest |
+|---|---|---|
+| E1 telemetry starved | Normal publishes keep 3 s from the previous *normal* publish and only 500 ms from an ack; telemetry waits at most 3 s for its slot; **the ack flush sends only the acks queued when it starts** (the real cause: `while (count > 0)` never returned while commands kept arriving); ack outbox 8 → 24 | 20 cmd/min for 5 min: telemetry median 9.2 s, max 15 s at a 5 s setting (was none for 7 min); health continued |
+| E2 offline while acking | Platform: any well-formed message marks the unit seen (`markSeen`, ≤ every 2 s) | 0 offline refusals in 400 commands |
+| E3 commands lost during OTA | Platform: 409 `OTA_IN_PROGRESS` while OTA is downloading/verifying/installing/rolling back (stale after 30 min) | backend tests (no OTA run on the bench yet) |
+| E4 history capped at 100 | `limit` and `before` paging on the actuation list (still an array) | all 300 commands of a run read back |
+| E5 late acks discarded | Kept as `lateAck` on the superseded command | 13 late acks recorded in the 20/min run |
+
+| Run (1.0.7) | Executed on board | Acked | Click → relay p50 / p95 / p99 | Click → ack p50 / p95 |
+|---|---|---|---|---|
+| 100 cmds, 1 every 3 s, 5 s telemetry | 100/100 | 100/100 (87 ACKED + 13 late) | 0.55 / 0.94 / 1.25 s | 3.9 / 6.9 s |
+| 20 cmds, 1 every 2 s, **1 h** telemetry | 20/20 | 20/20 | 0.68 / 1.05 / 1.35 s | 2.2 / 3.0 s |
+| Burst: 20 in 2 s on one relay (direct MQTT) | 20/20, in order, final state = last command | 20/20, in order, last after ~25 s | — | — |
+| Config deploy + 6 commands at once | 6/6 | 6/6 | the command arriving mid-save waited ~2 s for the save | config APPLIED 7.5 s |
+| 300 cmds, 1 every 1.2 s (overload) | all that reached it | ack queue overflowed (8 slots then; 24 now) | — | ~9.5 s |
+
+**Capacity note:** each ack costs ~1.15 s of modem time (four AT steps), so the unit can confirm at most ~0.85 commands/s while also sending telemetry. Beyond that, commands still run on arrival but acks queue up and the oldest are dropped when 24 are waiting; the relay state in telemetry still corrects the UI. Faster acks would need a shorter publish sequence or several acks per message (a contract change).
+
+**Flashing note:** SWD writes started failing ("failed to erase memory", later a verify mismatch). Cause: the watchdog firing during the longer multi-sector erase. Fix: write `0x1800` to `DBGMCU_APB1_FZ` (`0xE0042008`) in the same CLI call before `-w`; one verify mismatch also needed `freq=950`.
+
+Still open in section 4: commands during reconnect (parked: clean session; seen again when the soak started while the unit was still rebooting), Modbus poll (no slave on the bench), OTA refusal on hardware (section 22).

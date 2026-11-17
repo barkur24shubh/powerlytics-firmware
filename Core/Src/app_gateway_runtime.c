@@ -203,10 +203,14 @@ static telemetry_result_t publish_telemetry_once(void)
     /* A normal publish keeps a 3 s gap after the previous one and used to
      * sleep it out inside MQTT_Publish, during which nothing read the modem
      * and commands waited. Wait it out here, still serving downlinks. */
+    /* Never wait more than one gap: commands still run in the loop below,
+     * but a steady stream of their acks must not hold telemetry back. */
+    uint32_t gap_wait_start = HAL_GetTick();
     for (;;)
     {
         uint32_t gap_ms = connectivity_publish_gap_remaining_ms();
         if (gap_ms == 0U) break;
+        if ((HAL_GetTick() - gap_wait_start) >= 3000U) break;
         app_watchdog_mark_task(APP_WATCHDOG_TASK_RUNTIME);
         app_watchdog_refresh();
         (void)process_downlink_once("DOWNLINK BEFORE TELEMETRY");

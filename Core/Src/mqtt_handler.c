@@ -1397,9 +1397,24 @@ fail:
 }
 
 #define MQTT_PUBLISH_MIN_GAP_MS          3000UL
+/* A normal publish keeps MQTT_PUBLISH_MIN_GAP_MS from the previous NORMAL
+ * publish, and only this short breather from a priority one (ack). Before
+ * 2026-11-17 every ack restarted the 3 s wait, so a command every ~1.2 s held
+ * back telemetry and health for minutes (bench: 7 min, unit marked offline). */
+#define MQTT_PUBLISH_AFTER_PRIORITY_MS    500UL
 #define MQTT_PUBLISH_FAIL_COOLDOWN_MS   15000UL
 
 static uint32_t s_last_mqtt_publish_attempt_tick = 0;
+static uint32_t s_last_normal_publish_tick = 0;
+
+static uint32_t normal_publish_wait_ms(uint32_t now)
+{
+    uint32_t since_normal = now - s_last_normal_publish_tick;
+    uint32_t since_any = now - s_last_mqtt_publish_attempt_tick;
+    uint32_t a = (since_normal < MQTT_PUBLISH_MIN_GAP_MS) ? (MQTT_PUBLISH_MIN_GAP_MS - since_normal) : 0U;
+    uint32_t b = (since_any < MQTT_PUBLISH_AFTER_PRIORITY_MS) ? (MQTT_PUBLISH_AFTER_PRIORITY_MS - since_any) : 0U;
+    return (a > b) ? a : b;
+}
 static uint32_t s_mqtt_publish_block_until_tick = 0;
 
 static uint8_t mqtt_publish_impl(const char *topic, const char *payload, uint8_t enforce_min_gap)
@@ -1427,14 +1442,16 @@ static uint8_t mqtt_publish_impl(const char *topic, const char *payload, uint8_t
      * SIMCom MQTT engine becomes unstable in weak network if hammered.
      */
     uint32_t elapsed = now - s_last_mqtt_publish_attempt_tick;
-    if (enforce_min_gap && elapsed < MQTT_PUBLISH_MIN_GAP_MS) {
-        osDelay(MQTT_PUBLISH_MIN_GAP_MS - elapsed);
-    } else if (!enforce_min_gap && elapsed < MQTT_PUBLISH_MIN_GAP_MS) {
+    if (enforce_min_gap) {
+        uint32_t wait_ms = normal_publish_wait_ms(now);
+        if (wait_ms) osDelay(wait_ms);
+    } else if (elapsed < MQTT_PUBLISH_MIN_GAP_MS) {
         print("[MQTT PUB] priority publish bypassed min gap elapsed=%lu ms\r\n",
               (unsigned long)elapsed);
     }
 
     s_last_mqtt_publish_attempt_tick = HAL_GetTick();
+    if (enforce_min_gap) s_last_normal_publish_tick = s_last_mqtt_publish_attempt_tick;
 
     char cmd[128];
     print("[MQTT PUB] sending %s payloadLen=%lu\r\n",
@@ -1522,8 +1539,7 @@ uint8_t MQTT_PublishPriority(const char *topic, const char *payload)
  * downlinks, instead of MQTT_Publish blocking the runtime task in osDelay. */
 uint32_t MQTT_PublishGapRemainingMs(void)
 {
-    uint32_t elapsed = HAL_GetTick() - s_last_mqtt_publish_attempt_tick;
-    return (elapsed < MQTT_PUBLISH_MIN_GAP_MS) ? (MQTT_PUBLISH_MIN_GAP_MS - elapsed) : 0U;
+    return normal_publish_wait_ms(HAL_GetTick());
 }
 
 uint8_t MQTT_LastPublishAttempted(void)
@@ -1681,7 +1697,7 @@ char* MQTT_Subscriber_Run(void)
  * Before, each ack was published once, behind the 3 s publish gap, and a
  * failed publish (or the 15 s cooldown after one) lost it: the relay had
  * switched but the platform showed the command as unconfirmed. */
-#define ACT_ACK_OUTBOX_SLOTS     8U
+#define ACT_ACK_OUTBOX_SLOTS     24U  /* ~0.85 acks/s is the modem limit; absorb bursts while telemetry publishes */
 #define ACT_ACK_MAX_ATTEMPTS     30U
 #define ACT_ACK_PAYLOAD_MAX      192U
 #define ACT_RECENT_IDS           8U
@@ -1766,7 +1782,12 @@ static void publish_actuation_ack(const char *actuation_id,
  * at the top of every loop, before telemetry. */
 uint8_t MQTT_FlushActuationAcks(void)
 {
-    while (s_act_ack_count > 0U) {
+    /* Send only the acks queued when this call started. Commands keep
+     * arriving (and queueing acks) while each ack is published, so looping
+     * until the outbox is empty never returned under a steady command stream
+     * and held back telemetry and health (bench soak, 2026-11-17). */
+    uint8_t budget = s_act_ack_count;
+    while (s_act_ack_count > 0U && budget-- > 0U) {
         act_ack_slot_t *s = &s_act_ack_outbox[s_act_ack_head];
 
         uint8_t ok = MQTT_PublishPriority(topic_d2c_message, s->payload);

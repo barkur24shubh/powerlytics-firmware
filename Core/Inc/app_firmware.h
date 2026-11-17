@@ -7,8 +7,8 @@
  * Device/firmware identity used by telemetry, health, logs and OTA targeting.
  * Update these values intentionally for each production release.
  */
-#define APP_FIRMWARE_VERSION       "1.0.6"
-#define APP_FIRMWARE_BUILD "2026-11-17-config-hardening"
+#define APP_FIRMWARE_VERSION       "1.0.7"
+#define APP_FIRMWARE_BUILD "2026-11-17-command-stream"
 #define APP_DEVICE_MODEL           BOARD_VARIANT_NAME
 #define APP_OTA_SCHEMA_VERSION     1U
 
