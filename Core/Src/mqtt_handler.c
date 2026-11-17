@@ -9,6 +9,7 @@
  */
 
 #include "mqtt_handler.h"
+#include "app_gateway_platform.h"
 #include "main.h"
 #include "app_board_io.h"
 #include "debug_uart.h"
@@ -766,6 +767,7 @@ static uint8_t handle_ota_rollback_cjson(cJSON *root)
     }
     if (!ota_write_manifest_marker(offsetof(app_ota_manifest_t, rollback_requested),
                                    APP_OTA_ROLLBACK_REQUESTED)) return 0U;
+    app_gateway_set_reset_intent(APP_RESET_INTENT_OTA_ROLLBACK);
     NVIC_SystemReset();
     return 1U;
 }
@@ -1031,6 +1033,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
     }
 
     osDelay(1500U);
+    app_gateway_set_reset_intent(APP_RESET_INTENT_OTA_INSTALL);
     NVIC_SystemReset();
 
     return 1U;

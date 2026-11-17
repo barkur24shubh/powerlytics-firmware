@@ -689,8 +689,10 @@ int main(void)
   app_print_rtc_boot_time();
   uint32_t boot_count = rtc_increment_boot_count();
   app_boot_count = boot_count;
+  /* Boot count plus 32 random bits: unique even if the backup domain (and so
+   * the count) is lost, which the platform relies on to detect restarts. */
   snprintf(app_boot_id, sizeof(app_boot_id), "%lu-%08lX", (unsigned long)boot_count,
-           (unsigned long)HAL_GetTick());
+           (unsigned long)app_gateway_random32());
   snprintf(app_reset_reason, sizeof(app_reset_reason), "%s", app_gateway_reset_reason_name());
   app_health_set_boot_info(app_boot_count, app_boot_id, app_reset_reason);
   app_watchdog_force_refresh();

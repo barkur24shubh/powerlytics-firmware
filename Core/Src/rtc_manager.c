@@ -7,8 +7,10 @@
 extern RTC_HandleTypeDef hrtc;
 
 #define RTC_BKP_BOOT_COUNT_DR RTC_BKP_DR2
-#define RTC_BKP_CODE_TIME_DATE_DR RTC_BKP_DR3
-#define RTC_BKP_CODE_TIME_TIME_DR RTC_BKP_DR4
+/* DR3..DR13 hold the MCU fault record (app_gateway_platform.c), DR15 the
+ * reset intent, DR16/17 the watchdog stale task. */
+#define RTC_BKP_CODE_TIME_DATE_DR RTC_BKP_DR18
+#define RTC_BKP_CODE_TIME_TIME_DR RTC_BKP_DR19
 #define RTC_BKP_BOOT_STAGE_DR RTC_BKP_DR14
 #define RTC_BKP_BOOT_STAGE_MAGIC 0xB0070000UL
 #define RTC_BKP_BOOT_STAGE_MASK  0x000000FFUL

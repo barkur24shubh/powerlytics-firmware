@@ -1,20 +1,92 @@
 #include "app_gateway_platform.h"
 #include "debug_uart.h"
+#include <stdio.h>
 
 #define APP_GATEWAY_FAULT_MAGIC 0xFA17C0DEUL
 
 static uint32_t s_reset_csr = 0U;
 
-static const char *reset_reason_from_csr(uint32_t csr)
+/* Why the firmware itself asked for the reset. Written to a backup register
+ * just before NVIC_SystemReset() and consumed once at the next boot, so the
+ * reported reason can say OTA / fault / recovery instead of just SOFTWARE.
+ * It survives the bootloader's own reset after an OTA install. */
+#define APP_RESET_INTENT_MAGIC 0x5E700000UL
+#define APP_RESET_INTENT_MASK  0xFFFF0000UL
+#define APP_RESET_INTENT_REG   (RTC->BKP15R)
+
+static char s_reset_reason[40] = "UNKNOWN";
+
+static void fault_backup_access_enable(void);
+
+static const char *reset_intent_name(uint32_t intent)
 {
-    if (csr & RCC_CSR_IWDGRSTF) return "IWDG";
-    if (csr & RCC_CSR_WWDGRSTF) return "WWDG";
-    if (csr & RCC_CSR_SFTRSTF)  return "SOFTWARE";
-    if (csr & RCC_CSR_BORRSTF)  return "BROWNOUT";
-    if (csr & RCC_CSR_PORRSTF)  return "POWER_ON";
-    if (csr & RCC_CSR_PINRSTF)  return "PIN_RESET";
-    if (csr & RCC_CSR_LPWRRSTF) return "LOW_POWER";
-    return "UNKNOWN";
+    switch (intent & 0xFF00UL)
+    {
+        case APP_RESET_INTENT_OTA_INSTALL:    return "OTA_INSTALL";
+        case APP_RESET_INTENT_OTA_ROLLBACK:   return "OTA_ROLLBACK";
+        case APP_RESET_INTENT_MODEM_RECOVERY: return "MODEM_RECOVERY";
+        default:                              return NULL;
+    }
+}
+
+static void reset_reason_resolve(uint32_t csr, uint32_t intent_word)
+{
+    uint8_t intent_valid = ((intent_word & APP_RESET_INTENT_MASK) == APP_RESET_INTENT_MAGIC) ? 1U : 0U;
+    uint32_t intent = intent_word & 0xFFFFUL;
+    const char *name = "UNKNOWN";
+
+    /* Power-on sets PORRSTF and BORRSTF (and PINRSTF) together on the F4, so
+     * POR must win over BOR; BOR alone is a real brown-out. Every reset also
+     * pulses NRST, so PINRSTF alone is the only true pin reset. */
+    if (csr & RCC_CSR_IWDGRSTF)      name = "WATCHDOG";
+    else if (csr & RCC_CSR_WWDGRSTF) name = "WINDOW_WATCHDOG";
+    else if (csr & RCC_CSR_PORRSTF)  name = "POWER_ON";
+    else if (csr & RCC_CSR_BORRSTF)  name = "BROWNOUT";
+    else if (csr & RCC_CSR_LPWRRSTF) name = "LOW_POWER";
+    else if (csr & RCC_CSR_SFTRSTF)
+    {
+        if (intent_valid && (intent & 0xFF00UL) == APP_RESET_INTENT_FAULT)
+        {
+            snprintf(s_reset_reason, sizeof(s_reset_reason), "FAULT_%s",
+                     app_gateway_fault_name(intent & 0xFFUL));
+            return;
+        }
+        name = (intent_valid && reset_intent_name(intent)) ? reset_intent_name(intent) : "SOFTWARE";
+    }
+    else if (csr & RCC_CSR_PINRSTF)  name = "PIN_RESET";
+
+    snprintf(s_reset_reason, sizeof(s_reset_reason), "%s", name);
+}
+
+/* 32 random bits from the hardware RNG (48 MHz PLLQ clock, already running
+ * for USB). Falls back to the unique ID mixed with the tick if the RNG
+ * reports a seed/clock error or does not become ready. */
+uint32_t app_gateway_random32(void)
+{
+    __HAL_RCC_RNG_CLK_ENABLE();
+    RNG->CR |= RNG_CR_RNGEN;
+    for (uint32_t tries = 0U; tries < 100000UL; tries++)
+    {
+        uint32_t sr = RNG->SR;
+        if (sr & (RNG_SR_SEIS | RNG_SR_CEIS))
+        {
+            break;
+        }
+        if (sr & RNG_SR_DRDY)
+        {
+            uint32_t value = RNG->DR;
+            if (value != 0U) return value;
+        }
+    }
+    const uint32_t *uid = (const uint32_t *)UID_BASE;
+    return (uid[0] ^ (uid[1] << 7) ^ (uid[2] << 13)) ^ (HAL_GetTick() * 2654435761UL) ^ SysTick->VAL;
+}
+
+void app_gateway_set_reset_intent(uint32_t intent)
+{
+    fault_backup_access_enable();
+    APP_RESET_INTENT_REG = APP_RESET_INTENT_MAGIC | (intent & 0xFFFFUL);
+    __DSB();
 }
 
 static void fault_backup_access_enable(void)
@@ -139,6 +211,7 @@ void app_gateway_fault_capture_and_reset(uint32_t *stacked_sp,
     RTC->BKP12R = lr;
     RTC->BKP13R = count + 1UL;
     RTC->BKP3R = APP_GATEWAY_FAULT_MAGIC;
+    APP_RESET_INTENT_REG = APP_RESET_INTENT_MAGIC | APP_RESET_INTENT_FAULT | (code & 0xFFUL);
 
     __DSB();
     __ISB();
@@ -163,6 +236,12 @@ void app_gateway_print_reset_reason(void)
     if (csr & RCC_CSR_WWDGRSTF) print("[RST] WWDG reset\r\n");
     if (csr & RCC_CSR_LPWRRSTF) print("[RST] Low power reset\r\n");
 
+    fault_backup_access_enable();
+    uint32_t intent_word = APP_RESET_INTENT_REG;
+    APP_RESET_INTENT_REG = 0U;
+    reset_reason_resolve(csr, intent_word);
+    print("[RST] reason=%s intent=0x%08lX\r\n", s_reset_reason, (unsigned long)intent_word);
+
     __HAL_RCC_CLEAR_RESET_FLAGS();
 }
 
@@ -173,7 +252,7 @@ uint32_t app_gateway_reset_csr(void)
 
 const char *app_gateway_reset_reason_name(void)
 {
-    return reset_reason_from_csr(s_reset_csr);
+    return s_reset_reason;
 }
 
 void app_gateway_flash_setup(W25Q_Handle *flash,

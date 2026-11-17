@@ -29,6 +29,15 @@ typedef struct
     uint32_t count;
 } app_gateway_fault_record_t;
 
+/* Reasons the firmware records before it resets itself (see
+ * app_gateway_set_reset_intent). Low byte of FAULT carries the fault code. */
+#define APP_RESET_INTENT_OTA_INSTALL    0x0100UL
+#define APP_RESET_INTENT_OTA_ROLLBACK   0x0200UL
+#define APP_RESET_INTENT_MODEM_RECOVERY 0x0300UL
+#define APP_RESET_INTENT_FAULT          0x0500UL
+
+void app_gateway_set_reset_intent(uint32_t intent);
+uint32_t app_gateway_random32(void);
 void app_gateway_print_reset_reason(void);
 uint32_t app_gateway_reset_csr(void);
 const char *app_gateway_reset_reason_name(void);

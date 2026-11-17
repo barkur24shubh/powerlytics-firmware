@@ -1,4 +1,5 @@
 #include "comm_manager.h"
+#include "app_gateway_platform.h"
 
 #include "cmsis_os.h"
 #include "stm32f4xx_hal.h"
@@ -976,6 +977,7 @@ void comm_manager_run_once(void)
 
                 print("[COMM] MCU reset after repeated modem reset failures\r\n");
                 osDelay(1000);
+                app_gateway_set_reset_intent(APP_RESET_INTENT_MODEM_RECOVERY);
                 NVIC_SystemReset();
             }
 
