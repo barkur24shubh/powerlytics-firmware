@@ -1,5 +1,27 @@
 #include "w25q16.h"
+#include "cmsis_os2.h"
 #include <string.h>
+
+/* One lock for the chip: the config copies, flash logs, the engine sequence
+ * sector and OTA all share it from different tasks. Recursive, and skipped
+ * before the scheduler runs or from an interrupt. */
+static osMutexId_t s_w25q_mutex;
+
+static uint8_t w25q_lock(void)
+{
+    if (osKernelGetState() != osKernelRunning || __get_IPSR() != 0U) return 0U;
+    if (!s_w25q_mutex) {
+        static const osMutexAttr_t attr = { .name = "w25q", .attr_bits = osMutexRecursive | osMutexPrioInherit };
+        s_w25q_mutex = osMutexNew(&attr);
+        if (!s_w25q_mutex) return 0U;
+    }
+    return (osMutexAcquire(s_w25q_mutex, osWaitForever) == osOK) ? 1U : 0U;
+}
+
+static void w25q_unlock(uint8_t locked)
+{
+    if (locked) (void)osMutexRelease(s_w25q_mutex);
+}
 
 /* ===================== COMMANDS ===================== */
 #define CMD_JEDEC_ID        0x9F
@@ -86,7 +108,16 @@ bool w25q_init(W25Q_Handle *d) {
 }
 
 /* ===================== READ ===================== */
+static bool w25q_read_unlocked(W25Q_Handle *d, uint32_t addr, uint8_t *buf, uint32_t len);
+
 bool w25q_read(W25Q_Handle *d, uint32_t addr, uint8_t *buf, uint32_t len) {
+    uint8_t locked = w25q_lock();
+    bool ok = w25q_read_unlocked(d, addr, buf, len);
+    w25q_unlock(locked);
+    return ok;
+}
+
+static bool w25q_read_unlocked(W25Q_Handle *d, uint32_t addr, uint8_t *buf, uint32_t len) {
     uint8_t hdr[4];
 
     hdr[0] = CMD_READ_DATA;
@@ -132,24 +163,38 @@ static bool page_program(W25Q_Handle *d, uint32_t addr,
 bool w25q_write(W25Q_Handle *d, uint32_t addr,
                 const uint8_t *buf, uint32_t len)
 {
+    uint8_t locked = w25q_lock();
+    bool ok = true;
     while (len) {
         uint32_t page_off = addr % W25Q_PAGE_SIZE;
         uint32_t chunk = W25Q_PAGE_SIZE - page_off;
         if (chunk > len)
             chunk = len;
 
-        if (!page_program(d, addr, buf, chunk))
-            return false;
+        if (!page_program(d, addr, buf, chunk)) {
+            ok = false;
+            break;
+        }
 
         addr += chunk;
         buf  += chunk;
         len  -= chunk;
     }
-    return true;
+    w25q_unlock(locked);
+    return ok;
 }
 
 /* ===================== ERASE ===================== */
+static bool w25q_erase_unlocked(W25Q_Handle *d, uint32_t addr);
+
 bool w25q_erase_sector_4k(W25Q_Handle *d, uint32_t addr) {
+    uint8_t locked = w25q_lock();
+    bool ok = w25q_erase_unlocked(d, addr);
+    w25q_unlock(locked);
+    return ok;
+}
+
+static bool w25q_erase_unlocked(W25Q_Handle *d, uint32_t addr) {
     addr &= ~(W25Q_SECTOR_SIZE - 1);
 
     if (!write_enable(d))

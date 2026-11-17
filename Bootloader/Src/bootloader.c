@@ -340,7 +340,7 @@ static uint8_t manifest_load(app_ota_manifest_t *m)
         m->app_addr != APP_OTA_APPLICATION_ADDR ||
         m->app_max_size != APP_OTA_APPLICATION_SIZE ||
         m->image_size == 0U ||
-        m->image_size > APP_OTA_APPLICATION_SIZE) {
+        m->image_size > APP_OTA_MAX_IMAGE_SIZE) {
         return 0U;
     }
 
@@ -668,7 +668,7 @@ static uint8_t flash_install_from_w25q(const app_ota_manifest_t *m)
     if (!m ||
         m->app_addr != BOOT_APP_ADDR ||
         m->image_size == 0U ||
-        m->image_size > APP_OTA_APPLICATION_SIZE ||
+        m->image_size > APP_OTA_MAX_IMAGE_SIZE ||
         (m->app_addr + m->image_size) > BOOT_FLASH_END_ADDR) {
         return 0U;
     }

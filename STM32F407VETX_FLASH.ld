@@ -49,7 +49,7 @@ MEMORY
 {
   CCMRAM    (xrw)    : ORIGIN = 0x10000000,   LENGTH = 64K
   RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 128K
-  FLASH    (rx)    : ORIGIN = 0x8008000,   LENGTH = 480K
+  FLASH    (rx)    : ORIGIN = 0x8008000,   LENGTH = 352K /* ends at 0x08060000: sector 7 held the config before 2026-11-17 (still read once to migrate); keep the app out of it */
 }
 
 /* Sections */

@@ -623,6 +623,11 @@ void app_gateway_runtime_task(void *argument)
          */
         (void)app_health_signal_poll_due();
         app_memory_monitor_once();
+        /* The interval is measured from the start of one telemetry cycle to
+         * the next. Before 2026-11-17 the full interval was waited after the
+         * publish, logs and health had finished, so a 5 s setting gave a
+         * message every 10-14 s and 10 s gave 16-19 s. */
+        uint32_t telemetry_cycle_start = HAL_GetTick();
         telemetry_result_t telemetry_result = publish_telemetry_once();
 
         /*
@@ -678,8 +683,10 @@ void app_gateway_runtime_task(void *argument)
         }
         else
         {
-            print("[RUNTIME] next telemetry in %lu ms\r\n",
-                  (unsigned long)next_uplink_ms);
+            uint32_t spent_ms = HAL_GetTick() - telemetry_cycle_start;
+            next_uplink_ms = (spent_ms < next_uplink_ms) ? (next_uplink_ms - spent_ms) : 0U;
+            print("[RUNTIME] next telemetry in %lu ms (cycle work %lu ms)\r\n",
+                  (unsigned long)next_uplink_ms, (unsigned long)spent_ms);
         }
 
         app_gateway_online_idle_for(next_uplink_ms);

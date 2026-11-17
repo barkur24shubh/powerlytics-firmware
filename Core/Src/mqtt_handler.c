@@ -300,6 +300,27 @@ static uint8_t ota_url_is_supported(const char *url, const char **reason)
     return 1U;
 }
 
+/* On a hash mismatch, print a short hash of each 256-byte block of what was
+ * hashed, so the changed block can be found by comparing with the sender. */
+static void config_hash_block_diag(const uint8_t *data, size_t len)
+{
+    if (!data) return;
+    for (size_t off = 0U, blk = 0U; off < len; off += 256U, blk++) {
+        size_t n = (len - off > 256U) ? 256U : (len - off);
+        char hex[65];
+        sha256_hex(data + off, n, hex);
+        hex[8] = 0;
+        print("[CONFIG][HASH][BLK] %u %s\r\n", (unsigned)blk, hex);
+        osDelay(5);
+    }    size_t start = (len > 96U) ? len - 96U : 0U;
+    print("[CONFIG][HASH][TAIL] ");
+    for (size_t i = start; i < len; i++) {
+        uint8_t c = data[i];
+        print("%c", (c >= 32U && c < 127U) ? (char)c : '?');
+    }
+    print("\r\n");
+}
+
 static void publish_config_status(const char *config_id,
                                   const char *deployment_id,
                                   const char *status,
@@ -425,7 +446,7 @@ static uint8_t ota_write_pending_manifest(uint32_t image_size,
     app_ota_manifest_t manifest;
     app_ota_manifest_t verify;
 
-    if (!s_ota_flash || image_size == 0U || image_size > APP_OTA_APPLICATION_SIZE) {
+    if (!s_ota_flash || image_size == 0U || image_size > APP_OTA_MAX_IMAGE_SIZE) {
         return 0U;
     }
 
@@ -517,7 +538,7 @@ static uint8_t ota_read_manifest(app_ota_manifest_t *manifest)
         manifest->app_addr != APP_OTA_APPLICATION_ADDR ||
         manifest->app_max_size != APP_OTA_APPLICATION_SIZE ||
         manifest->image_size == 0U ||
-        manifest->image_size > APP_OTA_APPLICATION_SIZE) {
+        manifest->image_size > APP_OTA_MAX_IMAGE_SIZE) {
         return 0U;
     }
 
@@ -891,7 +912,7 @@ static uint8_t handle_ota_cjson(cJSON *root)
     }
 
     if ((uint32_t)size > OTA_STAGING_MAX_SIZE ||
-        (uint32_t)size > APP_OTA_APPLICATION_SIZE) {
+        (uint32_t)size > APP_OTA_MAX_IMAGE_SIZE) {
         (void)publish_ota_status_reported(deployment_id,
                                           "OTA_REJECTED",
                                           "VALIDATE",
@@ -1613,6 +1634,25 @@ void mqttPublishf(const char *fmt, ...)
    Subscriber Logic (UNCHANGED)
    ========================================================= */
 
+/* A config too large to receive used to vanish without a reply, so the
+ * deployment timed out with no reason. Answer it with "too_large". */
+static void report_oversize_downlink(void)
+{
+    char head[MODEM_URC_OVERSIZE_HEAD];
+    uint32_t len = modem_urc_take_oversize(head, sizeof(head));
+    if (!len || !strstr(head, "\"config\"")) return;
+    char config_id[48] = "unknown";
+    const char *p = strstr(head, "\"configId\":\"");
+    if (p) {
+        p += 12;
+        size_t i = 0U;
+        while (p[i] && p[i] != '"' && i < sizeof(config_id) - 1U) { config_id[i] = p[i]; i++; }
+        config_id[i] = 0;
+    }
+    print("[CONFIG][ERR] config too large len=%lu configId=%s\r\n", (unsigned long)len, config_id);
+    publish_config_status(config_id, "unknown", "error", "too_large");
+}
+
 char* MQTT_Subscriber_Run(void)
 {
     /*
@@ -1627,6 +1667,7 @@ char* MQTT_Subscriber_Run(void)
     }
 
     if (!modem_urc_pop_downlink(s_mqtt_rx_payload, sizeof(s_mqtt_rx_payload), &len)) {
+        report_oversize_downlink();
         return NULL;
     }
 
@@ -2080,6 +2121,7 @@ void handle_downlink_cjson(const char *payload_str)
 
     if (strcmp(hash->valuestring, hash_calc) != 0) {
         print("[CONFIG][HASH][ERR] mismatch\r\n");
+        config_hash_block_diag(hash_input, hash_input_len);
         app_log_push(APP_LOG_ERROR,
                      "CONFIG",
                      "HASH_MISMATCH",
@@ -2105,7 +2147,7 @@ void handle_downlink_cjson(const char *payload_str)
                      0,
                      0);
 
-        publish_config_status(id_str, deployment_str, "error", "parse_to_struct_failed");
+        publish_config_status(id_str, deployment_str, "error", modbus_cfg_parse_error());
 
         cJSON_Delete(root);
         return;

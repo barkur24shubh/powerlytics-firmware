@@ -42,6 +42,10 @@ void     modem_urc_init(uart2_rx_t *u2);
  * switch relays without waiting for the runtime to finish a publish. */
 #ifndef MODEM_URC_FAST_MAX
 #define MODEM_URC_FAST_MAX  512U
+#define MODEM_URC_OVERSIZE_HEAD 160U
+/* Length and first bytes of the last downlink dropped for its size (0 when
+ * none since the last call). */
+uint32_t modem_urc_take_oversize(char *head, size_t head_sz);
 #endif
 typedef uint8_t (*modem_urc_fast_handler_t)(const char *payload, size_t len);
 void     modem_urc_set_fast_handler(modem_urc_fast_handler_t fn);

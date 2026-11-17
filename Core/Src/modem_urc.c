@@ -24,6 +24,10 @@ static uint32_t          s_rx_count;
 static uint32_t          s_dropped;
 static modem_urc_fast_handler_t s_fast_handler;
 static char              s_fast_buf[MODEM_URC_FAST_MAX];
+/* Start of the last downlink that was too large to keep, so the handler
+ * can still tell the platform which config it refused. */
+static char              s_oversize_head[MODEM_URC_OVERSIZE_HEAD];
+static volatile uint32_t s_oversize_len;
 
 static uint32_t q_used(void) { return s_q_head - s_q_tail; }
 static uint32_t q_free(void) { return MODEM_URC_QUEUE_BYTES - q_used(); }
@@ -90,9 +94,11 @@ static void capture_block(uart2_rx_t *u2, const char *start_line)
     }
 
     uint8_t store = 0U;
+    uint8_t keep_head = 0U;
     if (payload_total > 0) {
         if ((uint32_t)payload_total + 2U > MODEM_URC_QUEUE_BYTES - 1U) {
             note_drop("too_large", payload_total);
+            keep_head = 1U;
         } else if (q_free() < (uint32_t)payload_total + 2U) {
             note_drop("queue_full", payload_total);
         } else {
@@ -100,6 +106,8 @@ static void capture_block(uart2_rx_t *u2, const char *start_line)
         }
     }
 
+    int chunk_sizes[8] = {0};
+    int chunk_count = 0;
     uint32_t base = s_q_head;          /* record header goes here */
     uint32_t wpos = base + 2U;         /* payload bytes go here */
     int stored = 0;
@@ -129,13 +137,28 @@ static void capture_block(uart2_rx_t *u2, const char *start_line)
                 note_drop("length_mismatch", payload_total);
                 store = 0U;
             }
-            int got = q_fill_from_uart(u2, keep ? (wpos + (uint32_t)stored) : UINT32_MAX,
+            int got;
+            if (keep_head && !keep) {
+                /* Keep the first bytes of an oversize message, skip the rest. */
+                int h = (pn < (int)sizeof(s_oversize_head) - 1) ? pn : (int)sizeof(s_oversize_head) - 1;
+                got = u2rx_read_exact_raw(u2, (uint8_t *)s_oversize_head, h, chunk_timeout_ms(h));
+                if (got == h) {
+                    s_oversize_head[h] = 0;
+                    got += u2rx_read_exact_raw(u2, NULL, pn - h, chunk_timeout_ms(pn - h));
+                }
+                keep_head = 0U;
+                if (got == pn) s_oversize_len = (uint32_t)payload_total;
+            } else {
+                got = q_fill_from_uart(u2, keep ? (wpos + (uint32_t)stored) : UINT32_MAX,
                                        pn, chunk_timeout_ms(pn));
+            }
             if (got != pn) {
                 if (store) note_drop("payload_timeout", payload_total);
                 return;
             }
             if (keep) stored += pn;
+            if (chunk_count < 8) chunk_sizes[chunk_count] = pn;
+            chunk_count++;
             continue;
         }
 
@@ -164,8 +187,9 @@ static void capture_block(uart2_rx_t *u2, const char *start_line)
             __DMB();
             s_q_head = wpos + (uint32_t)payload_total;
             s_rx_count++;
-            print("[MQTT RX] downlink queued len=%d pending_bytes=%lu total=%lu\r\n",
-                  payload_total, (unsigned long)q_used(), (unsigned long)s_rx_count);
+            print("[MQTT RX] downlink queued len=%d pending_bytes=%lu total=%lu chunks=%d [%d,%d,%d,%d]\r\n",
+                  payload_total, (unsigned long)q_used(), (unsigned long)s_rx_count,
+                  chunk_count, chunk_sizes[0], chunk_sizes[1], chunk_sizes[2], chunk_sizes[3]);
             return;
         }
 
@@ -239,6 +263,10 @@ uint8_t modem_urc_pop_downlink(char *out, size_t out_sz, size_t *out_len)
         uint32_t next = tail + 2U + len;
 
         if (len + 1U > out_sz) {
+            uint32_t h = (len < sizeof(s_oversize_head) - 1U) ? len : (uint32_t)sizeof(s_oversize_head) - 1U;
+            for (uint32_t i = 0; i < h; i++) s_oversize_head[i] = (char)q_get_byte(tail + 2U + i);
+            s_oversize_head[h] = 0;
+            s_oversize_len = len;
             s_q_tail = next;
             note_drop("reader_buffer_small", (int)len);
             continue;
@@ -253,6 +281,18 @@ uint8_t modem_urc_pop_downlink(char *out, size_t out_sz, size_t *out_len)
         return 1U;
     }
     return 0U;
+}
+
+uint32_t modem_urc_take_oversize(char *head, size_t head_sz)
+{
+    uint32_t len = s_oversize_len;
+    if (!len) return 0U;
+    if (head && head_sz) {
+        strncpy(head, s_oversize_head, head_sz - 1U);
+        head[head_sz - 1U] = 0;
+    }
+    s_oversize_len = 0U;
+    return len;
 }
 
 uint32_t modem_urc_downlink_count(void) { return s_rx_count; }

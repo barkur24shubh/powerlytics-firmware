@@ -539,8 +539,64 @@ static void parse_points_array(cJSON *points, modbus_cfg_t *cfg)
   }
 }
 
+/* Why the last parse refused the config, sent back to the platform in the
+ * error ack. Before 2026-11-17 over-limit values were cut or clamped and
+ * the config was reported APPLIED anyway. */
+static const char *s_parse_error = "parse_to_struct_failed";
+
+const char *modbus_cfg_parse_error(void)
+{
+  return s_parse_error;
+}
+
+static uint8_t kind_known(const char *k)
+{
+  return (k && (str_eq_ci(k, "digital") || str_eq_ci(k, "counter") || str_eq_ci(k, "analog") ||
+                str_eq_ci(k, "relay") || str_eq_ci(k, "modbus"))) ? 1U : 0U;
+}
+
+/* Refuses anything the device would otherwise have to drop or change. */
+static const char *check_limits(cJSON *cfg_json)
+{
+  cJSON *points = cJSON_GetObjectItemCaseSensitive(cfg_json, "points");
+  if (!cJSON_IsArray(points)) return NULL;
+
+  cJSON *ti = cJSON_GetObjectItemCaseSensitive(cfg_json, "telemetryInterval");
+  if (cJSON_IsNumber(ti) &&
+      (ti->valuedouble < (double)MODBUS_MIN_TELEMETRY_INTERVAL_MS ||
+       ti->valuedouble > (double)MODBUS_MAX_TELEMETRY_INTERVAL_MS)) {
+    return "interval_out_of_range";
+  }
+
+  uint32_t enabled = 0U, slaves = 0U;
+  cJSON *p = NULL;
+  cJSON_ArrayForEach(p, points) {
+    if (!cJSON_IsObject(p)) return "invalid_point";
+    cJSON *kind = cJSON_GetObjectItemCaseSensitive(p, "kind");
+    if (!cJSON_IsString(kind) || !kind_known(kind->valuestring)) return "unknown_point_kind";
+    cJSON *en = cJSON_GetObjectItemCaseSensitive(p, "enabled");
+    if (!cJSON_IsFalse(en)) enabled++;
+    cJSON *rules = cJSON_GetObjectItemCaseSensitive(p, "rules");
+    if (cJSON_IsArray(rules) && cJSON_GetArraySize(rules) > (int)POWERLYTICS_MAX_RULES_PER_POINT) return "too_many_rules";
+    cJSON *sl = cJSON_GetObjectItemCaseSensitive(p, "slaves");
+    if (cJSON_IsArray(sl) && !cJSON_IsFalse(en)) {
+      cJSON *one = NULL;
+      cJSON_ArrayForEach(one, sl) {
+        slaves++;
+        cJSON *reads = cJSON_GetObjectItemCaseSensitive(one, "reads");
+        if (!cJSON_IsArray(reads)) reads = cJSON_GetObjectItemCaseSensitive(one, "registers");
+        if (cJSON_IsArray(reads) && cJSON_GetArraySize(reads) > (int)MODBUS_MAX_READS_PER_SLAVE) return "too_many_reads";
+      }
+    }
+  }
+  if (enabled > POWERLYTICS_MAX_POINTS) return "too_many_points";
+  if (slaves > MODBUS_MAX_SLAVES) return "too_many_slaves";
+  return NULL;
+}
+
 static bool modbus_cfg_parse_root(cJSON *root, modbus_cfg_t *cfg)
 {
+  s_parse_error = "parse_to_struct_failed";
   if (!root || !cfg) return false;
 
   modbus_cfg_defaults(cfg);
@@ -551,6 +607,12 @@ static bool modbus_cfg_parse_root(cJSON *root, modbus_cfg_t *cfg)
   }
 
   if (cJSON_GetObjectItemCaseSensitive(cfg_json, "modbusSlaves") != NULL) {
+    return false;
+  }
+
+  const char *limit_error = check_limits(cfg_json);
+  if (limit_error) {
+    s_parse_error = limit_error;
     return false;
   }
 
@@ -593,6 +655,7 @@ static bool modbus_cfg_parse_root(cJSON *root, modbus_cfg_t *cfg)
       !cJSON_IsNumber(cap) ||
       cap->valuedouble < 1.0 || cap->valuedouble > POWERLYTICS_MAX_EVENT_CAP ||
       cap->valuedouble != (double)(uint32_t)cap->valuedouble) {
+    s_parse_error = "invalid_telemetry_settings";
     return false;
   }
 
@@ -602,6 +665,7 @@ static bool modbus_cfg_parse_root(cJSON *root, modbus_cfg_t *cfg)
 
   if (cfg->device_id[0] == '\0' || cfg->config_id[0] == '\0' ||
       cfg->deployment_id[0] == '\0' || cfg->api_key[0] == '\0') {
+    s_parse_error = "missing_identity_fields";
     return false;
   }
 

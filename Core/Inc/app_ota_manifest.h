@@ -10,6 +10,10 @@
 #define APP_OTA_APPLICATION_ADDR      0x08008000UL
 #define APP_OTA_APPLICATION_SIZE      (512UL * 1024UL - APP_OTA_BOOTLOADER_SIZE)
 #define APP_OTA_FLASH_END_ADDR        0x08080000UL
+/* Largest application image accepted: it must end before sector 7
+ * (0x08060000). The manifest's app_max_size and the backup slot keep
+ * APP_OTA_APPLICATION_SIZE so installed bootloaders still accept manifests. */
+#define APP_OTA_MAX_IMAGE_SIZE        (0x08060000UL - APP_OTA_APPLICATION_ADDR)
 
 #define APP_OTA_MANIFEST_W25Q_ADDR    0x000000UL
 #define APP_OTA_W25Q_TOTAL_SIZE       (2UL * 1024UL * 1024UL)

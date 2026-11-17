@@ -389,6 +389,9 @@ void modbus_cfg_defaults(modbus_cfg_t *cfg);
 // Shared large config workspace used for boot/downlink parse-load-save flows.
 modbus_cfg_t *modbus_cfg_workspace(void);
 
+/* External flash used for the A/B config copies (call before load/save). */
+void modbus_cfg_set_flash(void *flash);
+
 // Load config from FLASH. Returns false if invalid, CRC mismatch, or version mismatch.
 bool modbus_cfg_load(modbus_cfg_t *out);
 

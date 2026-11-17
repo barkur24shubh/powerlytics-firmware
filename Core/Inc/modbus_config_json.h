@@ -6,3 +6,5 @@ typedef struct cJSON cJSON;
 
 bool modbus_cfg_from_json(const char *json, modbus_cfg_t *cfg);
 bool modbus_cfg_from_cjson(cJSON *root, modbus_cfg_t *cfg);
+/* Reason the last modbus_cfg_from_cjson() call refused the config. */
+const char *modbus_cfg_parse_error(void);

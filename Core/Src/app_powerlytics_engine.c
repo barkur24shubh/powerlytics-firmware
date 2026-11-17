@@ -1103,9 +1103,10 @@ const char *app_powerlytics_engine_build_telemetry(void)
 
   jb_append(s_telemetry_json, ENGINE_JSON_MAX, &idx,
             "{\"v\":1,\"type\":\"telemetry\",\"imei\":\"%s\",\"configId\":\"%s\","
-            "\"seq\":%lu,\"ts\":\"%s\",\"values\":{",
+            "\"configHash\":\"%.16s\",\"seq\":%lu,\"ts\":\"%s\",\"values\":{",
             s_cfg.imei,
             s_cfg.config_id,
+            s_cfg.hash,   /* first 16 hex of the applied config's hash: which config produced this */
             (unsigned long)seq,
             ts);
 

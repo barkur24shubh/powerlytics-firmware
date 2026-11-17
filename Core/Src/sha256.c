@@ -68,8 +68,20 @@ void sha256_final(sha256_ctx_t *ctx, uint8_t hash[32])
 {
   uint32_t i = ctx->datalen;
 
-  ctx->data[i++] = 0x80;
-  while (i < 56) ctx->data[i++] = 0x00;
+  /* 0x80, zeros, then the 64-bit length in the last 8 bytes of a block. When
+   * 56 or more bytes are already buffered there is no room for the length,
+   * so the padding runs into one more block. (Before 2026-11-17 this case
+   * overwrote the tail of the data: wrong hashes for every input whose
+   * length mod 64 was 56..63, e.g. some configs and OTA images.) */
+  if (i < 56) {
+    ctx->data[i++] = 0x80;
+    while (i < 56) ctx->data[i++] = 0x00;
+  } else {
+    ctx->data[i++] = 0x80;
+    while (i < 64) ctx->data[i++] = 0x00;
+    sha256_transform(ctx, ctx->data);
+    for (i = 0; i < 56; i++) ctx->data[i] = 0x00;
+  }
 
   ctx->bitlen += ctx->datalen * 8;
   ctx->data[63] = ctx->bitlen;

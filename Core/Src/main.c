@@ -713,6 +713,7 @@ int main(void)
   app_watchdog_force_refresh();
   app_gateway_flash_test(&s_flash);
   connectivity_set_ota_flash(&s_flash);
+  modbus_cfg_set_flash(&s_flash);
   app_watchdog_force_refresh();
 
   app_boot_stage_enter(RTC_BOOT_STAGE_CONFIG_LOAD);
