@@ -251,3 +251,15 @@ Findings:
 | Data loss during an outage / replay | **fail** | Telemetry is not buffered offline: 100 % loss for the outage (T6). Store-and-forward needs a contract decision (replayed seqs are older than live ones). |
 
 Also seen: the unit silently drops an invalid Modbus read or slave and still reports APPLIED (a crafted config with DB-style field names gave `slaves=0`); belongs to section 10 (Modbus).
+
+## 12. Live data (2026-11-18)
+
+| Test | Result | Notes |
+|---|---|---|
+| Latency device publish → screen | **pass** | Board PUBACK → server +0.15 s → browser +0.25 s (~0.4 s); the board itself takes ~2 s from snapshot to publish. |
+| Every update reaches the viewer | **fixed** | Only the instance that stored a message pushed it live: with production also on the broker the local stream got 1 update in 27 s. Now the losing instance pushes the newest reading too: 6 updates in 35 s, ~150 ms server → browser. Affects any multi-instance deployment. |
+| Reconnect after network loss / API restart | **fixed** | The restart itself reconnected, but the app then signed the user out (401 → token cleared). |
+| Token expiry | **fixed** | Access tokens last 60 min and the client signed out on the first 401 instead of renewing from the session cookie (why the local sign-in kept expiring). Now renews once and retries; verified with an invalid token: page kept working. Stream retries back off 5 s → 60 s. |
+| Stream isolation | **pass** | Other workspace → 404, device not in workspace → 404, no ticket → 401. Tickets are 30 s, reusable within that (by design, so EventSource can reconnect). |
+| 50 tabs | **partly** | Server caps 10 streams per user (tests). Locally the browser's 6-connections-per-host HTTP/1.1 limit stalls API calls beyond ~5 streaming tabs; production over HTTP/2 is not affected. |
+| Live chart = latest values = DB | not run | Same source (stream patches the latest-values cache). |
