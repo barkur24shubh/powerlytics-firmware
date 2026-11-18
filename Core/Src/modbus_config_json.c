@@ -1,5 +1,6 @@
 #include "modbus_config_json.h"
 #include "cJSON.h"
+#include "app_rule_eval.h"
 
 #include <stdio.h>
 #include <stdint.h>
@@ -673,6 +674,31 @@ static bool modbus_cfg_parse_root(cJSON *root, modbus_cfg_t *cfg)
 
   cJSON *points = cJSON_GetObjectItemCaseSensitive(cfg_json, "points");
   parse_points_array(points, cfg);
+
+  /* A rule that cannot behave sensibly (band with low >= high, hysteresis
+   * wider than the band, negative hysteresis) is refused with its reason
+   * instead of running an alarm that never clears. */
+  for (uint8_t i = 0U; i < cfg->point_count && i < POWERLYTICS_MAX_POINTS; i++) {
+    for (uint8_t r = 0U; r < cfg->points[i].rule_count && r < POWERLYTICS_MAX_RULES_PER_POINT; r++) {
+      const char *why = NULL;
+      if (!app_rule_cfg_valid(&cfg->points[i].rules[r], &why)) {
+        s_parse_error = why;
+        return false;
+      }
+    }
+  }
+  for (uint8_t si = 0U; si < cfg->slave_count && si < MODBUS_MAX_SLAVES; si++) {
+    for (uint8_t ri = 0U; ri < cfg->slaves[si].read_count && ri < MODBUS_MAX_READS_PER_SLAVE; ri++) {
+      const mb_read_item_t *rc = &cfg->slaves[si].reads[ri];
+      for (uint8_t r = 0U; r < rc->rule_count && r < POWERLYTICS_MAX_RULES_PER_POINT; r++) {
+        const char *why = NULL;
+        if (!app_rule_cfg_valid(&rc->rules[r], &why)) {
+          s_parse_error = why;
+          return false;
+        }
+      }
+    }
+  }
 
   /* Relay safe states: applied at boot and, when relayLinkLossSafeMs is set,
    * after the connection has been lost that long. Default OFF / hold. */

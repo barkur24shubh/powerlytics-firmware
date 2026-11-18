@@ -1,4 +1,5 @@
 #include "app_powerlytics_engine.h"
+#include "app_rule_eval.h"
 
 #include "app_board_io.h"
 #include "app_debug_led.h"
@@ -16,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define ENGINE_JSON_MAX        8192U
 #define ENGINE_EVENT_MAX       512U
@@ -42,18 +44,8 @@
 #define ENGINE_DI_CHANNELS ((BOARD_DI_COUNT < ENGINE_MAX_DI_CHANNELS) ? BOARD_DI_COUNT : ENGINE_MAX_DI_CHANNELS)
 #define ENGINE_AI_CHANNELS ((BOARD_AI_COUNT < ENGINE_MAX_AI_CHANNELS) ? BOARD_AI_COUNT : ENGINE_MAX_AI_CHANNELS)
 
-typedef enum {
-  RULE_STATE_NORMAL = 0,
-  RULE_STATE_HIGH_PENDING,
-  RULE_STATE_HIGH_ACTIVE,
-  RULE_STATE_RECOVERY_PENDING,
-} rule_runtime_state_t;
-
-typedef struct {
-  uint8_t state;
-  uint32_t entered_ms;
-  float previous_value;
-} rule_runtime_t;
+/* Analog alarm state machine lives in app_rule_eval.c (host-tested). */
+typedef app_rule_runtime_t rule_runtime_t;
 
 typedef struct {
   uint8_t present;
@@ -137,6 +129,12 @@ static uint16_t s_mb_regs[ENGINE_MB_REG_MAX];
 static volatile uint8_t s_di_event_pending[8][POWERLYTICS_MAX_RULES_PER_POINT];
 static volatile uint8_t s_di_event_previous[8][POWERLYTICS_MAX_RULES_PER_POINT];
 static volatile uint8_t s_di_event_current[8][POWERLYTICS_MAX_RULES_PER_POINT];
+/* Edge rule chatter filter: rule debounceMs is the minimum time between two
+ * events of the same rule; edges inside it are counted and the count goes
+ * out with the next event as data.suppressed. */
+static uint32_t s_di_rule_last_ms[8][POWERLYTICS_MAX_RULES_PER_POINT];
+static uint8_t  s_di_rule_sent[8][POWERLYTICS_MAX_RULES_PER_POINT];
+static uint32_t s_di_rule_suppressed[8][POWERLYTICS_MAX_RULES_PER_POINT];
 static volatile uint16_t s_di_irq_pending_mask;
 static volatile uint32_t s_di_irq_tick[ENGINE_MAX_DI_CHANNELS];
 
@@ -474,14 +472,22 @@ static void append_float(char *json, int max, int *idx, float value)
   }
 }
 
-static uint8_t event_push_json(const char *source,
-                               const char *event_type,
-                               uint8_t severity,
-                               const char *slave_id,
-                               const char *read_id,
-                               float value,
-                               float previous,
-                               float threshold)
+static uint8_t event_queue_has_space(void)
+{
+  return (uint8_t)(((s_event_w + 1U) % ENGINE_EVENT_QUEUE) != s_event_r);
+}
+
+/* extra: optional JSON members (no leading comma) added inside data, e.g.
+ * "context":{...} or "reason":"rule_changed". */
+static uint8_t event_push_json_x(const char *source,
+                                 const char *event_type,
+                                 uint8_t severity,
+                                 const char *slave_id,
+                                 const char *read_id,
+                                 float value,
+                                 float previous,
+                                 float threshold,
+                                 const char *extra)
 {
 
   char ts[40];
@@ -529,6 +535,7 @@ static uint8_t event_push_json(const char *source,
   append_float(json, ENGINE_EVENT_MAX, &idx, previous);
   jb_append(json, ENGINE_EVENT_MAX, &idx, ",\"threshold\":");
   append_float(json, ENGINE_EVENT_MAX, &idx, threshold);
+  if (extra && extra[0]) jb_append(json, ENGINE_EVENT_MAX, &idx, ",%s", extra);
   jb_append(json, ENGINE_EVENT_MAX, &idx, "}}");
 
   if (idx >= (int)ENGINE_EVENT_MAX) {
@@ -544,6 +551,243 @@ static uint8_t event_push_json(const char *source,
   return 1U;
 }
 
+/* ---------- Rule context (contextKeys) ---------- */
+
+static int point_index_of_key(const char *key, const char *prefix)
+{
+  /* "AI_3", "AI3", "ai3", "ai_3" -> 2 */
+  if (!key || !prefix) return -1;
+  size_t n = strlen(prefix);
+  if (strncasecmp(key, prefix, n - 1U) != 0) return -1;
+  const char *d = key + (n - 1U);
+  if (*d == '_') d++;
+  if (*d < '1' || *d > '9') return -1;
+  int v = atoi(d);
+  return (v >= 1) ? (v - 1) : -1;
+}
+
+static uint8_t context_value(const char *key, float *out)
+{
+  int i = point_index_of_key(key, "AI_");
+  if (i >= 0 && i < (int)ENGINE_AI_CHANNELS && s_ai[i].present && s_ai[i].seeded) {
+    *out = s_ai[i].last;
+    return 1U;
+  }
+  i = point_index_of_key(key, "DI_");
+  if (i >= 0 && i < (int)ENGINE_DI_CHANNELS && s_di[i].present && s_di[i].seeded) {
+    *out = (float)s_di[i].last;
+    return 1U;
+  }
+  for (uint8_t si = 0U; si < s_cfg.slave_count && si < MODBUS_MAX_SLAVES; si++) {
+    for (uint8_t ri = 0U; ri < s_cfg.slaves[si].read_count && ri < MODBUS_MAX_READS_PER_SLAVE; ri++) {
+      const mb_read_item_t *rc = &s_cfg.slaves[si].reads[ri];
+      if (strcmp(rc->read_id, key) != 0 && strcmp(rc->tag, key) != 0) continue;
+      const modbus_read_runtime_t *rt = &s_mi[si][ri];
+      if (!rt->present) return 0U;
+      *out = rt->last;
+      return 1U;
+    }
+  }
+  return 0U;
+}
+
+/* "context":{"AI_2":1.250,"DI_1":1.000} for the keys that have a value now.
+ * Keys with no reading yet are sent as null so the cloud can tell. */
+static void build_rule_extra(const powerlytics_rule_cfg_t *rule, uint32_t suppressed,
+                             char *buf, int max)
+{
+  int idx = 0;
+  buf[0] = '\0';
+  if (!rule) return;
+  if (rule->context_count > 0U) {
+    jb_append(buf, max, &idx, "\"context\":{");
+    for (uint8_t k = 0U; k < rule->context_count && k < POWERLYTICS_MAX_CONTEXT_KEYS; k++) {
+      float v;
+      jb_append(buf, max, &idx, "%s\"%s\":", k ? "," : "", rule->context_keys[k]);
+      if (context_value(rule->context_keys[k], &v)) append_float(buf, max, &idx, v);
+      else jb_append(buf, max, &idx, "null");
+    }
+    jb_append(buf, max, &idx, "}");
+  }
+  if (suppressed > 0U) {
+    jb_append(buf, max, &idx, "%s\"suppressed\":%lu", idx ? "," : "", (unsigned long)suppressed);
+  }
+  if (idx >= max) buf[0] = '\0';
+}
+
+/* ---------- Active alarms kept across resets (backup SRAM) ---------- */
+/* Each active analog rule is stored as a hash of where it is (point key or
+ * slave/read id, rule index) and what it means (type, limits, hysteresis).
+ * After a reset or a config redeploy a rule whose hash is in the set starts
+ * active, so a condition that is still present is not raised a second time
+ * and its recovery is still sent when it clears. Backup SRAM survives
+ * resets (watchdog, OTA, modem recovery) and, with VBAT and the backup
+ * regulator on, power loss. A bad magic/CRC means nothing is restored. */
+#define ALARM_BKP_MAGIC 0x414C4D31UL /* ALM1 */
+#define ALARM_BKP_MAX   (ENGINE_MAX_AI_CHANNELS * POWERLYTICS_MAX_RULES_PER_POINT + \
+                         MODBUS_MAX_SLAVES * MODBUS_MAX_READS_PER_SLAVE * POWERLYTICS_MAX_RULES_PER_POINT)
+
+typedef struct {
+  uint32_t magic;
+  uint32_t count;
+  uint32_t hash[ALARM_BKP_MAX];
+  uint32_t crc;
+} alarm_bkp_t;
+
+static alarm_bkp_t *alarm_bkp(void)
+{
+  static uint8_t ready;
+  if (!ready) {
+    __HAL_RCC_PWR_CLK_ENABLE();
+    HAL_PWR_EnableBkUpAccess();
+    __HAL_RCC_BKPSRAM_CLK_ENABLE();
+    (void)HAL_PWREx_EnableBkUpReg();
+    ready = 1U;
+  }
+  return (alarm_bkp_t *)BKPSRAM_BASE;
+}
+
+static uint32_t rule_hash(const char *where1, const char *where2, uint8_t index,
+                          const powerlytics_rule_cfg_t *r)
+{
+  struct {
+    char w1[40];
+    char w2[40];
+    uint8_t index;
+    uint8_t type;
+    float high;
+    float low;
+    float hysteresis;
+  } k;
+  memset(&k, 0, sizeof(k));
+  if (where1) strncpy(k.w1, where1, sizeof(k.w1) - 1U);
+  if (where2) strncpy(k.w2, where2, sizeof(k.w2) - 1U);
+  k.index = index;
+  k.type = r->type;
+  k.high = r->high;
+  k.low = r->low;
+  k.hysteresis = r->hysteresis;
+  return crc32_sw(&k, sizeof(k));
+}
+
+typedef void (*rule_visit_fn)(const char *source, const char *slave_id, const char *read_id,
+                              uint8_t index, const powerlytics_rule_cfg_t *rule,
+                              rule_runtime_t *rt, float last, void *ctx);
+
+/* Every enabled analog rule of cfg, with the runtime slot it uses. */
+static void visit_analog_rules(const modbus_cfg_t *cfg, rule_visit_fn fn, void *ctx)
+{
+  if (!cfg || !fn) return;
+  for (uint8_t pi = 0U; pi < cfg->point_count && pi < POWERLYTICS_MAX_POINTS; pi++) {
+    const powerlytics_point_cfg_t *p = &cfg->points[pi];
+    if (!p->enabled || p->kind != POWERLYTICS_POINT_ANALOG) continue;
+    int ai = point_index_of_key(p->key, "AI_");
+    if (ai < 0 || ai >= (int)ENGINE_AI_CHANNELS) continue;
+    for (uint8_t r = 0U; r < p->rule_count && r < POWERLYTICS_MAX_RULES_PER_POINT; r++) {
+      if (!p->rules[r].enabled || !app_rule_is_analog(p->rules[r].type)) continue;
+      fn(p->key, NULL, NULL, r, &p->rules[r], &s_ai[ai].rules[r], s_ai[ai].last, ctx);
+    }
+  }
+  for (uint8_t si = 0U; si < cfg->slave_count && si < MODBUS_MAX_SLAVES; si++) {
+    const mb_slave_cfg_t *sc = &cfg->slaves[si];
+    for (uint8_t ri = 0U; ri < sc->read_count && ri < MODBUS_MAX_READS_PER_SLAVE; ri++) {
+      const mb_read_item_t *rc = &sc->reads[ri];
+      if (rc->kind != POWERLYTICS_MODBUS_KIND_ANALOG) continue;
+      for (uint8_t r = 0U; r < rc->rule_count && r < POWERLYTICS_MAX_RULES_PER_POINT; r++) {
+        if (!rc->rules[r].enabled || !app_rule_is_analog(rc->rules[r].type)) continue;
+        fn("MI_1", sc->unique_slave_id, rc->read_id, r, &rc->rules[r],
+           &s_mi[si][ri].analog.rules[r], s_mi[si][ri].last, ctx);
+      }
+    }
+  }
+}
+
+typedef struct {
+  uint32_t hash[ALARM_BKP_MAX];
+  uint32_t count;
+} hash_set_t;
+
+static uint8_t hash_set_has(const hash_set_t *set, uint32_t h)
+{
+  for (uint32_t i = 0U; i < set->count; i++) if (set->hash[i] == h) return 1U;
+  return 0U;
+}
+
+static void collect_active(const char *source, const char *slave_id, const char *read_id,
+                           uint8_t index, const powerlytics_rule_cfg_t *rule,
+                           rule_runtime_t *rt, float last, void *ctx)
+{
+  (void)last;
+  hash_set_t *set = (hash_set_t *)ctx;
+  if (!app_rule_is_active(rt) || set->count >= ALARM_BKP_MAX) return;
+  set->hash[set->count++] = rule_hash(slave_id ? slave_id : source, read_id, index, rule);
+}
+
+static void collect_all(const char *source, const char *slave_id, const char *read_id,
+                        uint8_t index, const powerlytics_rule_cfg_t *rule,
+                        rule_runtime_t *rt, float last, void *ctx)
+{
+  (void)rt; (void)last;
+  hash_set_t *set = (hash_set_t *)ctx;
+  if (set->count >= ALARM_BKP_MAX) return;
+  set->hash[set->count++] = rule_hash(slave_id ? slave_id : source, read_id, index, rule);
+}
+
+static void alarm_state_save(void)
+{
+  static hash_set_t set;
+  vTaskSuspendAll();
+  set.count = 0U;
+  visit_analog_rules(&s_cfg, collect_active, &set);
+
+  alarm_bkp_t *b = alarm_bkp();
+  b->magic = 0U; /* invalid while being written */
+  b->count = set.count;
+  memcpy(b->hash, set.hash, sizeof(b->hash));
+  b->crc = crc32_sw(b->hash, sizeof(b->hash)) ^ b->count;
+  b->magic = ALARM_BKP_MAGIC;
+  (void)xTaskResumeAll();
+}
+
+static uint8_t alarm_state_load(hash_set_t *set)
+{
+  alarm_bkp_t *b = alarm_bkp();
+  set->count = 0U;
+  if (b->magic != ALARM_BKP_MAGIC || b->count > ALARM_BKP_MAX) return 0U;
+  if ((crc32_sw(b->hash, sizeof(b->hash)) ^ b->count) != b->crc) return 0U;
+  set->count = b->count;
+  memcpy(set->hash, b->hash, sizeof(set->hash));
+  return 1U;
+}
+
+static void restore_active(const char *source, const char *slave_id, const char *read_id,
+                           uint8_t index, const powerlytics_rule_cfg_t *rule,
+                           rule_runtime_t *rt, float last, void *ctx)
+{
+  (void)last;
+  const hash_set_t *set = (const hash_set_t *)ctx;
+  if (hash_set_has(set, rule_hash(slave_id ? slave_id : source, read_id, index, rule))) {
+    app_rule_restore_active(rt, HAL_GetTick());
+  }
+}
+
+/* A rule that was active and is gone (deleted, disabled, new limits) after
+ * a redeploy: tell the cloud the alarm it raised is over. */
+static void recover_dropped(const char *source, const char *slave_id, const char *read_id,
+                            uint8_t index, const powerlytics_rule_cfg_t *rule,
+                            rule_runtime_t *rt, float last, void *ctx)
+{
+  const hash_set_t *next = (const hash_set_t *)ctx;
+  if (!app_rule_is_active(rt)) return;
+  if (hash_set_has(next, rule_hash(slave_id ? slave_id : source, read_id, index, rule))) return;
+  float threshold = (rule->type == POWERLYTICS_RULE_THRESHOLD_LOW) ? rule->low : rule->high;
+  if (rule->type == POWERLYTICS_RULE_OUT_OF_RANGE || rule->type == POWERLYTICS_RULE_IN_RANGE) {
+    threshold = (last < rule->low) ? rule->low : rule->high;
+  }
+  (void)event_push_json_x(source, "AI_RECOVERY", rule->severity, slave_id, read_id,
+                          last, last, threshold, "\"reason\":\"rule_changed\"");
+}
+
 static void evaluate_threshold_rule(const char *source,
                                     const char *slave_id,
                                     const char *read_id,
@@ -551,75 +795,25 @@ static void evaluate_threshold_rule(const char *source,
                                     rule_runtime_t *rt,
                                     float value)
 {
-  if (!cfg || !rt || !cfg->enabled) return;
+  app_rule_out_t out;
+  app_rule_ev_t ev = app_rule_step(cfg, rt, value, HAL_GetTick(), &out);
+  if (ev == RULE_EV_NONE) return;
 
+  /* Only a queued event changes the rule's state; a full queue leaves it
+   * pending and the next sample tries again (not counted as a drop). */
+  if (!event_queue_has_space()) return;
+
+  char extra[128];
+  build_rule_extra(cfg, 0U, extra, (int)sizeof(extra));
   uint32_t now = HAL_GetTick();
-  uint8_t crossed = 0U;
-  uint8_t recovered = 0U;
-  float threshold = 0.0f;
-  const char *event_type = "AI_THRESHOLD";
-
-  if (cfg->type == POWERLYTICS_RULE_THRESHOLD_HIGH) {
-    crossed = (value > cfg->high) ? 1U : 0U;
-    recovered = (value <= (cfg->high - cfg->hysteresis)) ? 1U : 0U;
-    threshold = cfg->high;
-    event_type = "AI_THRESHOLD_HIGH";
-  } else if (cfg->type == POWERLYTICS_RULE_THRESHOLD_LOW) {
-    crossed = (value < cfg->low) ? 1U : 0U;
-    recovered = (value >= (cfg->low + cfg->hysteresis)) ? 1U : 0U;
-    threshold = cfg->low;
-    event_type = "AI_THRESHOLD_LOW";
-  } else if (cfg->type == POWERLYTICS_RULE_OUT_OF_RANGE) {
-    crossed = (value < cfg->low || value > cfg->high) ? 1U : 0U;
-    recovered = (value >= (cfg->low + cfg->hysteresis) && value <= (cfg->high - cfg->hysteresis)) ? 1U : 0U;
-    threshold = (value < cfg->low) ? cfg->low : cfg->high;
-    event_type = "AI_OUT_OF_RANGE";
-  } else if (cfg->type == POWERLYTICS_RULE_IN_RANGE) {
-    crossed = (value >= cfg->low && value <= cfg->high) ? 1U : 0U;
-    recovered = (value < (cfg->low - cfg->hysteresis) || value > (cfg->high + cfg->hysteresis)) ? 1U : 0U;
-    threshold = (value < cfg->low) ? cfg->low : cfg->high;
-    event_type = "AI_IN_RANGE";
-  } else {
-    return;
-  }
-
-  /* A pending state is re-checked on the same sample, so with no duration
-   * the event fires on the sample that crossed (and carries its value).
-   * Recovery must stay inside the hysteresis band for the whole recovery
-   * time: a value back between the band and the threshold cancels it.
-   * (Before 2026-11-18 a 0 ms rule fired one sample late with the next
-   * sample's value, and recovery completed at 825 for high 850 / hysteresis
-   * 100 because only a new crossing cancelled it.) */
-  if (rt->state == RULE_STATE_NORMAL && crossed) {
-    rt->state = RULE_STATE_HIGH_PENDING;
-    rt->entered_ms = now;
-  }
-  if (rt->state == RULE_STATE_HIGH_PENDING) {
-    if (!crossed) {
-      rt->state = RULE_STATE_NORMAL;
-    } else if ((now - rt->entered_ms) >= cfg->duration_ms) {
-      rt->state = RULE_STATE_HIGH_ACTIVE;
-      event_push_json(source, event_type, cfg->severity, slave_id, read_id,
-                      value, rt->previous_value, threshold);
-      rt->previous_value = value;
-      return;
+  if (event_push_json_x(source, out.event_type, cfg->severity, slave_id, read_id,
+                        value, out.previous, out.threshold, extra[0] ? extra : NULL)) {
+    if (app_rule_commit(rt, ev, now)) {
+      print("[RULE] %s %s chattering: recovery held %lu s\r\n", source,
+            out.event_type, (unsigned long)(RULE_CHATTER_HOLD_MS / 1000UL));
     }
+    alarm_state_save();
   }
-  if (rt->state == RULE_STATE_HIGH_ACTIVE && recovered) {
-    rt->state = RULE_STATE_RECOVERY_PENDING;
-    rt->entered_ms = now;
-  }
-  if (rt->state == RULE_STATE_RECOVERY_PENDING) {
-    if (!recovered) {
-      rt->state = RULE_STATE_HIGH_ACTIVE;
-    } else if ((now - rt->entered_ms) >= cfg->recovery_duration_ms) {
-      rt->state = RULE_STATE_NORMAL;
-      event_push_json(source, "AI_RECOVERY", cfg->severity, slave_id, read_id,
-                      value, rt->previous_value, threshold);
-    }
-  }
-
-  rt->previous_value = value;
 }
 
 static void evaluate_analog_rules(const char *source,
@@ -698,16 +892,31 @@ static void flush_di_events(void)
 
       if (!pending || !di_event_rule_at(p, r, &rule)) continue;
 
-      uint8_t queued = 0U;
-      if (rule.type == POWERLYTICS_RULE_RISING_EDGE) {
-        queued = event_push_json(p->key, "DI_RISING_EDGE", rule.severity,
-                                 NULL, NULL, (float)current, (float)previous, 1.0f);
-      } else if (rule.type == POWERLYTICS_RULE_FALLING_EDGE) {
-        queued = event_push_json(p->key, "DI_FALLING_EDGE", rule.severity,
-                                 NULL, NULL, (float)current, (float)previous, 0.0f);
+      uint32_t now = HAL_GetTick();
+      if (rule.debounce_ms > 0U && s_di_rule_sent[i][r] &&
+          (uint32_t)(now - s_di_rule_last_ms[i][r]) < rule.debounce_ms) {
+        s_di_rule_suppressed[i][r]++;
+        continue;
       }
 
-      if (!queued) {
+      char extra[128];
+      build_rule_extra(&rule, s_di_rule_suppressed[i][r], extra, (int)sizeof(extra));
+      uint8_t queued = 0U;
+      if (rule.type == POWERLYTICS_RULE_RISING_EDGE) {
+        queued = event_push_json_x(p->key, "DI_RISING_EDGE", rule.severity,
+                                   NULL, NULL, (float)current, (float)previous, 1.0f,
+                                   extra[0] ? extra : NULL);
+      } else if (rule.type == POWERLYTICS_RULE_FALLING_EDGE) {
+        queued = event_push_json_x(p->key, "DI_FALLING_EDGE", rule.severity,
+                                   NULL, NULL, (float)current, (float)previous, 0.0f,
+                                   extra[0] ? extra : NULL);
+      }
+
+      if (queued) {
+        s_di_rule_last_ms[i][r] = now;
+        s_di_rule_sent[i][r] = 1U;
+        s_di_rule_suppressed[i][r] = 0U;
+      } else {
         primask = critical_enter();
         if (!s_di_event_pending[i][r]) {
           s_di_event_previous[i][r] = previous;
@@ -841,14 +1050,16 @@ static void evaluate_modbus_digital_rules(const mb_read_item_t *rc,
     const powerlytics_rule_cfg_t *rule = &rc->rules[i];
     if (!rule->enabled) continue;
 
+    char extra[128];
+    build_rule_extra(rule, 0U, extra, (int)sizeof(extra));
     if (rule->type == POWERLYTICS_RULE_RISING_EDGE && previous == 0U && current == 1U) {
-      (void)event_push_json("MI_1", "DI_RISING_EDGE", rule->severity,
-                            sc->unique_slave_id, rc->read_id,
-                            1.0f, 0.0f, 1.0f);
+      (void)event_push_json_x("MI_1", "DI_RISING_EDGE", rule->severity,
+                              sc->unique_slave_id, rc->read_id,
+                              1.0f, 0.0f, 1.0f, extra[0] ? extra : NULL);
     } else if (rule->type == POWERLYTICS_RULE_FALLING_EDGE && previous == 1U && current == 0U) {
-      (void)event_push_json("MI_1", "DI_FALLING_EDGE", rule->severity,
-                            sc->unique_slave_id, rc->read_id,
-                            0.0f, 1.0f, 0.0f);
+      (void)event_push_json_x("MI_1", "DI_FALLING_EDGE", rule->severity,
+                              sc->unique_slave_id, rc->read_id,
+                              0.0f, 1.0f, 0.0f, extra[0] ? extra : NULL);
     }
   }
 }
@@ -970,17 +1181,38 @@ void app_powerlytics_engine_apply_config(const modbus_cfg_t *cfg)
 {
   if (!cfg) return;
 
+  /* Alarm state across the change: rules that still mean the same thing stay
+   * active (no second raise); active rules that are gone send a recovery
+   * with reason rule_changed. On the first apply after a reset the active
+   * set comes from backup SRAM. */
+  static hash_set_t next_rules;
+  static hash_set_t active;
+  next_rules.count = 0U;
+  active.count = 0U;
+  visit_analog_rules(cfg, collect_all, &next_rules);
+  if (s_cfg_valid) {
+    visit_analog_rules(&s_cfg, recover_dropped, &next_rules);
+    visit_analog_rules(&s_cfg, collect_active, &active);
+  } else if (alarm_state_load(&active) && active.count > 0U) {
+    print("[ENGINE] %lu active alarm(s) restored after reset\r\n", (unsigned long)active.count);
+  }
+
   uint32_t primask = critical_enter();
   s_cfg = *cfg;
   s_cfg_valid = 1U;
   memset(s_di, 0, sizeof(s_di));
   memset(s_ai, 0, sizeof(s_ai));
   memset(s_mi, 0, sizeof(s_mi));
+  memset(s_di_rule_sent, 0, sizeof(s_di_rule_sent));
+  memset(s_di_rule_suppressed, 0, sizeof(s_di_rule_suppressed));
   memset(s_modbus_next_poll, 0, sizeof(s_modbus_next_poll));
   memset(s_modbus_next_read, 0, sizeof(s_modbus_next_read));
   s_events_this_interval = 0U;
   s_next_sample_ms = HAL_GetTick();
   critical_exit(primask);
+
+  visit_analog_rules(&s_cfg, restore_active, &active);
+  alarm_state_save();
 
   uint8_t d[8] = {0};
   app_di_read_all(d);

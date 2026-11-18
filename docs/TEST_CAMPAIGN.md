@@ -277,3 +277,27 @@ Event source without hardware: a `threshold_high` rule on AI_1 (high 850, hyster
 | Events during an outage buffered and replayed | **partly** | Only 8 are kept (RAM); the rest are dropped (now reported). Same store-and-forward question as telemetry (T6). |
 | Same eventId from two devices / redelivery | pass (tests) | Unique index on (deviceId, eventId). |
 | Physical edge timing, debounce, chatter at threshold | not run | Hardware (section 7/13 HIL). |
+
+## 14. Alarm rules in plant scenarios (2026-11-18, firmware 1.0.12)
+
+Rule state machine moved to `Core/Src/app_rule_eval.c`; host tests `scripts/rule_eval_host_test.c` (52 checks):
+`cc -std=c11 -Wall -Wextra -ICore/Inc scripts/rule_eval_host_test.c Core/Src/app_rule_eval.c -lm -o /tmp/rule_test && /tmp/rule_test`
+
+| # | Scenario | Before (1.0.11) | 1.0.12 |
+|---|---|---|---|
+| S1 | Tank H 80 / HH 95, on-delay 5 s, off-delay 10 s | ✅ device; **platform opened HH on an H event** | ✅ one raise + one recovery each; platform matches by threshold |
+| S2 | Noisy transmitter ±0.8 around the limit, hysteresis 2 | ✅ | ✅ one alarm |
+| S2b/S15 | No deadband / floating input (bench AI_1 240–1150, 50 ms samples) | ❌ raise/recover every second: bench ~28 events/min, 703 dropped, telemetry every ~15 s | ✅ chatter guard: 3 raises then one held alarm; bench 5 events in 3 min, 26 telemetry, 0 drops |
+| S3 | Motor inrush 3 s vs overload 8 s, on-delay 5 s | ✅ | ✅ |
+| S4 | Low pressure, recovery bounces inside off-delay | ✅ | ✅ |
+| S5 | Out-of-range high → low without passing normal | ✅ | ✅ one alarm |
+| S6 | in_range forbidden speed band | ✅ | ✅ |
+| S7 | NaN/inf read during an alarm | ❌ NaN counted as recovered for some types | ✅ neither raises nor clears |
+| S8 | Event queue full at raise / recovery | ❌ state changed, event lost (alert never opened, or never closed) | ✅ retried on the next sample, not counted as a drop |
+| S9 | Tick wrap during on-delay | ✅ | ✅ |
+| S10 | Impossible rules (band low ≥ high, hysteresis ≥ half band, negative) | ❌ accepted; alarm could never clear | ✅ refused: `invalid_rule_band` / `invalid_rule_hysteresis` / `invalid_rule_number` |
+| S11 | Reset with an active alarm | ❌ forgotten: no recovery ever sent | ✅ bench: "1 active alarm(s) restored", 0 events after reset; recovery held 60 s |
+| S14 | Config redeploy | ❌ every deploy reset all alarms | ✅ same rule keeps its state; removed/changed rule sends `AI_RECOVERY` `reason:"rule_changed"` (bench check pending: needs a cloud deploy) |
+| — | Edge rule `debounceMs`, `contextKeys` | ❌ ignored | ✅ implemented (bench check pending: DI stimulus / cloud deploy) |
+
+Open (proposals, not built): `latchMode` on the device; sensor-fault detection for 4–20 mA (NAMUR NE43 < 3.6 mA / > 21 mA); more than 2 rules per point (L/LL/H/HH); alarm state across power loss needs VBAT.
