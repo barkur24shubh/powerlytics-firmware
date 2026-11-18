@@ -14,6 +14,22 @@ FIRMWARE_VERSION="$(sed -n 's/^#define APP_FIRMWARE_VERSION[[:space:]]*"\([^"]*\
   "${APP_BUILD_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.elf" \
   "${APP_BUILD_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.bin"
 
+# Pad the app image with 0xFF (erased flash) to a multiple of 64 bytes.
+# Firmware before 1.0.6 and bootloaders built before 2026-11-17 compute a
+# wrong SHA-256 for inputs whose length mod 64 is 56-63, so an image of such
+# a size would be refused as corrupt by every unit still running them.
+python3 - "${APP_BUILD_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.bin" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path, "rb") as f:
+    data = f.read()
+pad = (-len(data)) % 64
+if pad:
+    with open(path, "ab") as f:
+        f.write(b"\xff" * pad)
+print(f"app image {len(data)} -> {len(data) + pad} bytes (multiple of 64)")
+PY
+
 "${OBJCOPY}" -O ihex \
   "${APP_BUILD_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.elf" \
   "${APP_BUILD_DIR}/BALCKPILL_BASED_GENERIC_GATEWAY.hex"
