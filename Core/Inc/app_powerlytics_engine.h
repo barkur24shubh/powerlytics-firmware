@@ -19,6 +19,8 @@ void app_powerlytics_engine_apply_config(const modbus_cfg_t *cfg);
 uint16_t app_powerlytics_engine_relay_flags(void);
 /* Relay states in the last telemetry snapshot; returns 0 before the first. */
 uint8_t app_powerlytics_engine_reported_relays(uint8_t *mask);
+/* Last telemetry snapshot built for the cloud and its seq; NULL before the first. */
+const char *app_powerlytics_engine_last_telemetry(uint32_t *seq);
 void app_powerlytics_engine_sample_due(void);
 void app_powerlytics_engine_flush_events(void);
 void app_powerlytics_engine_di_edge_isr(uint16_t gpio_pin);

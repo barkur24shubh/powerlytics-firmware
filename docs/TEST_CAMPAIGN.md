@@ -235,4 +235,19 @@ Findings:
 | H1 uncertain after a fixed 10 min | Uncertain after 3 × telemetry interval (min 1 min), and always while offline ("Uncertain (offline)") | code + type-check; tiles show "reported just now" at 5 s |
 | H2 no relay history | "Relay history" on the Controls tab: when, relay, command, device answer with ack time, late ack, device-reported state, You / Another member (names live in the account app) | seen in the UI ✅ |
 | H3 no physical result | Platform stores `physical {reportedState, at, matches}` from the first report sampled after the ack | unit tests ✅; live: recorded when the local API processed the report ("reported OFF" in the history) — the production instance, still on old code, usually wins the telemetry race, so live coverage waits for the deploy |
-| H4 local change only at next interval | Unit reports at once when an output differs from its last snapshot and no command came in 3 s (≤ every 2 s) | 1 h interval: platform 5.4 s after a pin change ✅; a single command → report 3 s later ✅ |
+| H4 local change only at next interval (see below for section 11) | Unit reports at once when an output differs from its last snapshot and no command came in 3 s (≤ every 2 s) | 1 h interval: platform 5.4 s after a pin change ✅; a single command → report 3 s later ✅ |
+
+## 11. Telemetry pipeline (2026-11-18)
+
+| Test | Result | Notes |
+|---|---|---|
+| Every enabled point present | **fail** | DI_7/DI_8 (pulse counters) are announced in hello and enabled in config but never measured or reported — no counter code in firmware. Parked (device ports). |
+| seq monotonic across reboots | **pass** | Continuous across 6 reboots today; one +5 jump at the power-cut boot. |
+| Gaps detected and shown | **fixed** | Gap warning fired for duplicates/older seqs (`!== prev+1`); now only forward jumps, counted on the device (`telemetryGaps`) and shown on the admin Boot & Identity card ("Missed Telemetry"). |
+| Replays dropped | **fixed** | Telemetry now carries `bootId` (firmware 1.0.10), so the platform drops an older redelivery from the same boot. |
+| SD telemetry log stole seq numbers | **fixed (code)** | With an SD card fitted, the SD logger built its own snapshot every interval (new seq, reset DI transitions and min/max windows). It now copies the last cloud snapshot. Bench has no SD card. |
+| Malformed / unknown version quarantined | pass (tests) | Existing telemetryService tests. |
+| Max-size config / telemetry | **fail → fixing** | A valid 6.7 KB config with 4 Modbus slaves × 3 reads crashed the unit (`FAULT_MALLOC_FAILED`: cJSON needs ~28 KB, ~24 KB heap free); a 5.7 KB one (within the 6 KB platform limit) needs ~24 KB. Fix: downlinks parsed into a dedicated 16 KB arena owned by the downlink task, heap fallback. A first 28 KB arena left too little main stack and boot hung at SD/FAT init; 16 KB boots fine. Retest after the power cut: the 6.7 KB config → APPLIED, arena peak 16 384 B (heap took the rest), no reset ✅. The 4 × 6 reads maximum the limits allow is a 9.7 KB envelope — undeliverable (T7). |
+| Data loss during an outage / replay | **fail** | Telemetry is not buffered offline: 100 % loss for the outage (T6). Store-and-forward needs a contract decision (replayed seqs are older than live ones). |
+
+Also seen: the unit silently drops an invalid Modbus read or slave and still reports APPLIED (a crafted config with DB-style field names gave `slaves=0`); belongs to section 10 (Modbus).

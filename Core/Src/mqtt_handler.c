@@ -1959,7 +1959,21 @@ void MQTT_InstallFastDownlinkHandler(void)
     modem_urc_set_fast_handler(mqtt_fast_downlink);
 }
 
+void app_cjson_arena_begin(void);
+void app_cjson_arena_end(void);
+size_t app_cjson_arena_peak(void);
+static void handle_downlink_cjson_inner(const char *payload_str);
+
+/* Every downlink is parsed in the dedicated cJSON arena (see main.c). */
 void handle_downlink_cjson(const char *payload_str)
+{
+    app_cjson_arena_begin();
+    handle_downlink_cjson_inner(payload_str);
+    app_cjson_arena_end();
+    print("[CJSON] downlink parse arena peak=%lu bytes\r\n", (unsigned long)app_cjson_arena_peak());
+}
+
+static void handle_downlink_cjson_inner(const char *payload_str)
 {
     if (!payload_str || !payload_str[0]) return;
 

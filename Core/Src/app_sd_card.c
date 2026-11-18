@@ -1,4 +1,5 @@
 #include "app_sd_card.h"
+#include "app_powerlytics_engine.h"
 
 #include "fatfs.h"
 #include "debug_uart.h"
@@ -14,7 +15,7 @@
 
 #define APP_SD_TEST_FILE "SDTEST.TXT"
 #define APP_SD_TELEMETRY_INTERVAL_MS (5UL * 60UL * 1000UL)
-#define APP_SD_TERMINAL_LOG_BUFFER_SZ 8192U
+#define APP_SD_TERMINAL_LOG_BUFFER_SZ 2048U  /* was 8 KB; RAM went to the downlink parse arena (2026-11-18) */
 #define APP_SD_TERMINAL_LINE_SZ 512U
 #define APP_SD_TERMINAL_FLUSH_MS 5000UL
 
@@ -885,7 +886,17 @@ void app_sd_telemetry_service(void)
         return;
     }
 
-    const char *payload = app_build_payload_json_once();
+    /* Copy the last snapshot built for the cloud; building a new one here
+     * took a seq number and reset the counters the cloud report needs. */
+    static uint32_t s_last_logged_seq = 0xFFFFFFFFUL;
+    uint32_t seq = 0U;
+    const char *payload = app_powerlytics_engine_last_telemetry(&seq);
+    if (!payload || seq == s_last_logged_seq)
+    {
+        s_next_due_tick = now + APP_SD_TELEMETRY_INTERVAL_MS;
+        return;
+    }
+    s_last_logged_seq = seq;
     uint8_t ok = app_sd_append_telemetry_payload(payload);
 
     print("[SD_LOG] telemetry append %s mode=%s\r\n",

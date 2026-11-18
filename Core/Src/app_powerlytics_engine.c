@@ -102,6 +102,9 @@ typedef struct {
   uint32_t crc32;
 } seq_record_t;
 
+extern char app_boot_id[48];
+static uint32_t s_last_built_seq;
+static uint8_t  s_last_built_valid;
 static modbus_cfg_t s_cfg;
 /* Relay states as last put into a telemetry snapshot (bit i = RO_(i+1) ON). */
 static uint8_t s_reported_relays;
@@ -918,6 +921,16 @@ void app_powerlytics_engine_init(mbm_t *mbm)
   s_next_sample_ms = HAL_GetTick();
 }
 
+/* The last telemetry snapshot built for the cloud (NULL before the first):
+ * the SD log copies this instead of building its own, which used to take a
+ * seq number and reset the transition counters and min/max windows. */
+const char *app_powerlytics_engine_last_telemetry(uint32_t *seq)
+{
+  if (!s_last_built_valid) return NULL;
+  if (seq) *seq = s_last_built_seq;
+  return s_telemetry_json;
+}
+
 uint8_t app_powerlytics_engine_reported_relays(uint8_t *mask)
 {
   if (mask) *mask = s_reported_relays;
@@ -1112,15 +1125,18 @@ const char *app_powerlytics_engine_build_telemetry(void)
 
   uint32_t primask = critical_enter();
   uint32_t seq = s_next_telemetry_seq++;
+  s_last_built_seq = seq;
+  s_last_built_valid = 1U;
   int idx = 0;
   uint8_t first = 1U;
 
   jb_append(s_telemetry_json, ENGINE_JSON_MAX, &idx,
             "{\"v\":1,\"type\":\"telemetry\",\"imei\":\"%s\",\"configId\":\"%s\","
-            "\"configHash\":\"%.16s\",\"seq\":%lu,\"ts\":\"%s\",\"values\":{",
+            "\"configHash\":\"%.16s\",\"bootId\":\"%s\",\"seq\":%lu,\"ts\":\"%s\",\"values\":{",
             s_cfg.imei,
             s_cfg.config_id,
             s_cfg.hash,   /* first 16 hex of the applied config's hash: which config produced this */
+            app_boot_id,  /* lets the platform drop an older redelivery from the same boot (FH-004) */
             (unsigned long)seq,
             ts);
 

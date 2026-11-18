@@ -385,11 +385,63 @@ static void app_usb_cdc_standalone_test(void)
 }
 #endif
 
+/*
+ * cJSON memory. Downlinks (configs above all) are parsed into a dedicated
+ * arena owned by the task that handles them, instead of the shared FreeRTOS
+ * heap: a valid 5.7 KB config with Modbus reads needs ~24 KB of parse nodes,
+ * about all the heap that is free, and a 6.7 KB one crashed the unit with
+ * MALLOC_FAILED (bench, 2026-11-18). Other tasks, and the arena owner once
+ * the arena is full, keep using the heap. free() of arena memory is a no-op;
+ * the arena is reset when the downlink has been handled.
+ */
+#define APP_CJSON_ARENA_SZ (16U * 1024U)  /* + heap fallback; 28 KB left too little main stack for boot (SD/FAT init hung) */
+static uint8_t s_cjson_arena[APP_CJSON_ARENA_SZ] __attribute__((aligned(8)));
+static size_t s_cjson_arena_used;
+static size_t s_cjson_arena_peak;
+static volatile osThreadId_t s_cjson_arena_owner;
+
+static void *app_cjson_malloc(size_t n)
+{
+  if (s_cjson_arena_owner && osThreadGetId() == s_cjson_arena_owner) {
+    size_t need = (n + 7U) & ~(size_t)7U;
+    if (s_cjson_arena_used + need <= APP_CJSON_ARENA_SZ) {
+      void *p = &s_cjson_arena[s_cjson_arena_used];
+      s_cjson_arena_used += need;
+      if (s_cjson_arena_used > s_cjson_arena_peak) s_cjson_arena_peak = s_cjson_arena_used;
+      return p;
+    }
+  }
+  return pvPortMalloc(n);
+}
+
+static void app_cjson_free(void *p)
+{
+  if ((uint8_t *)p >= s_cjson_arena && (uint8_t *)p < s_cjson_arena + APP_CJSON_ARENA_SZ) return;
+  vPortFree(p);
+}
+
+void app_cjson_arena_begin(void)
+{
+  s_cjson_arena_used = 0U;
+  s_cjson_arena_owner = osThreadGetId();
+}
+
+void app_cjson_arena_end(void)
+{
+  s_cjson_arena_owner = NULL;
+  s_cjson_arena_used = 0U;
+}
+
+size_t app_cjson_arena_peak(void)
+{
+  return s_cjson_arena_peak;
+}
+
 static void app_cjson_use_freertos_heap(void)
 {
   cJSON_Hooks hooks = {
-    .malloc_fn = pvPortMalloc,
-    .free_fn = vPortFree,
+    .malloc_fn = app_cjson_malloc,
+    .free_fn = app_cjson_free,
   };
 
   cJSON_InitHooks(&hooks);
