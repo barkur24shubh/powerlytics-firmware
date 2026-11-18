@@ -547,13 +547,16 @@ static void app_store_device_boot_log(uint32_t boot_count)
     uint8_t time_preserved = rtc_time_was_preserved();
     const char *prev_stage = rtc_boot_stage_name(s_previous_boot_stage);
 
-    if (!app_modbus_payload_has_valid_config())
-    {
-        print("[BOOT_LOG] skipped: waiting for valid config/apiKey reason=%s bootCount=%lu\r\n",
-              reason,
-              (unsigned long)boot_count);
-        return;
-    }
+    /* Stored even before the unit has a config: boots during onboarding are
+     * the ones worth seeing. Level follows the cause (2026-11-18): a normal
+     * power-on or OTA install is INFO, not ERROR (every boot opened an
+     * issue), a crash is FATAL (the platform raises a critical alert). */
+    app_log_level_t boot_level = APP_LOG_INFO;
+    if (strncmp(reason, "FAULT_", 6) == 0) boot_level = APP_LOG_FATAL;
+    else if (strstr(reason, "WATCHDOG")) boot_level = APP_LOG_ERROR;
+    else if (!strcmp(reason, "BROWNOUT") || !strcmp(reason, "LOW_POWER") ||
+             !strcmp(reason, "MODEM_RECOVERY") || !strcmp(reason, "OTA_ROLLBACK") ||
+             !strcmp(reason, "UNKNOWN")) boot_level = APP_LOG_WARN;
 
     snprintf(message,
              sizeof(message),
@@ -565,7 +568,7 @@ static void app_store_device_boot_log(uint32_t boot_count)
              time_preserved ? "true" : "false",
              rtc_ok ? "ok" : "fail");
 
-    uint8_t ok = app_flash_log_write(APP_LOG_ERROR,
+    uint8_t ok = app_flash_log_write(boot_level,
                                      "SYSTEM",
                                      "DEVICE_BOOT",
                                      message,
@@ -592,13 +595,6 @@ static void app_store_pending_fault_log(void)
         return;
     }
 
-    if (!app_modbus_payload_has_valid_config())
-    {
-        print("[FAULT_LOG] pending fault retained: waiting for valid config/apiKey code=%lu\r\n",
-              (unsigned long)fault.code);
-        return;
-    }
-
     char message[96];
     snprintf(message,
              sizeof(message),
@@ -609,7 +605,8 @@ static void app_store_pending_fault_log(void)
              (unsigned long)fault.cfsr,
              (unsigned long)fault.hfsr);
 
-    uint8_t ok = app_flash_log_write(APP_LOG_ERROR,
+    /* A crash is a firmware defect: FATAL raises a critical alert. */
+    uint8_t ok = app_flash_log_write(APP_LOG_FATAL,
                                      "SYSTEM",
                                      "MCU_FAULT_RESET",
                                      message,
@@ -645,7 +642,7 @@ static void app_store_sd_card_boot_log(void)
         return;
     }
 
-    uint8_t ok = app_flash_log_write(APP_LOG_ERROR,
+    uint8_t ok = app_flash_log_write(APP_LOG_INFO, /* SD card is optional: not an error (2026-11-18) */
                                      "STORAGE",
                                      "SD_CARD_NOT_MOUNTED",
                                      "SD card not mounted, local SD logging disabled",

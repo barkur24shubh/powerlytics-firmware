@@ -19,6 +19,7 @@ extern "C" {
  */
 
 #define APP_FLASH_LOG_UPLOAD_INTERVAL_MS   60000UL
+#define APP_FLASH_LOG_BACKLOG_INTERVAL_MS  10000UL
 #define APP_FLASH_LOG_MAX_UPLOAD_PER_RUN   1U
 
 uint8_t app_flash_log_init(W25Q_Handle *flash);

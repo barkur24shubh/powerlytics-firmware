@@ -409,13 +409,9 @@ void app_log_critical(app_log_level_t level,
           (long)value2,
           recovery ? recovery : "");
 
-    if (!app_modbus_payload_has_valid_config()) {
-        print("[CRITICAL][SUPPRESS] waiting for valid config/apiKey module=%s event=%s\r\n",
-              module ? module : "",
-              event ? event : "");
-        return;
-    }
-
+    /* Kept even before the unit has a config (2026-11-18): failures during
+     * onboarding were dropped here. Logs no longer carry the API key, so
+     * they can be uploaded as soon as the unit is online. */
     app_incident_cache_t *incident = find_or_alloc_incident(module, root_event);
     uint32_t now = HAL_GetTick();
     uint8_t should_emit = 0U;

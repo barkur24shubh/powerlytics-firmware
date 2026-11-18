@@ -73,6 +73,8 @@ typedef char app_flash_log_record_size_check[
 
 static W25Q_Handle *s_flash = NULL;
 static uint8_t  s_ready = 0;
+static uint8_t  s_flash_missing = 0;
+static uint8_t  s_flash_missing_reported = 0;
 
 static uint32_t s_seq = 0;
 static uint16_t s_next_write_slot = 0;
@@ -374,6 +376,11 @@ static uint8_t record_crc_ok(const app_flash_log_record_t *r)
     memcpy(&tmp, r, sizeof(tmp));
     uint32_t stored = tmp.crc32;
     tmp.crc32 = 0;
+    /* The CRC is taken while the record is pending; marking it uploaded
+     * (0xFFFFFFFF -> 0) must not make it look corrupt. Before 2026-11-18 it
+     * did, so after a reboot uploaded records were skipped and the log seq
+     * restarted at 1. */
+    tmp.uploaded_mark = APP_FLASH_LOG_UPLOADED_MARK_PENDING;
 
     return (crc32_sw(&tmp, sizeof(tmp)) == stored) ? 1U : 0U;
 }
@@ -447,26 +454,10 @@ static int32_t effective_record_count(uint16_t slot, const app_flash_log_record_
     return (int32_t)stored_count;
 }
 
-static void erase_log_region(void)
-{
-    if (!s_flash) return;
-
-    for (uint32_t addr = APP_FLASH_LOG_BASE_ADDR;
-         addr < (APP_FLASH_LOG_BASE_ADDR + APP_FLASH_LOG_AREA_SIZE);
-         addr += W25Q_SECTOR_SIZE) {
-        (void)w25q_erase_sector_4k(s_flash, addr);
-        osDelay(5);
-    }
-
-    s_next_write_slot = 0;
-    s_pending_count = 0;
-    s_total_count = 0;
-    memset(s_slot_merge_count, 0, sizeof(s_slot_merge_count));
-}
-
 static void scan_log_region(void)
 {
     app_flash_log_record_t r;
+    uint16_t newest_slot = APP_FLASH_LOG_SLOT_COUNT;
 
     s_next_write_slot = APP_FLASH_LOG_SLOT_COUNT;
     s_pending_count = 0;
@@ -498,15 +489,46 @@ static void scan_log_region(void)
 
             if (r.seq > s_seq) {
                 s_seq = r.seq;
+                newest_slot = i;
             }
         }
     }
 
-    if (s_next_write_slot == APP_FLASH_LOG_SLOT_COUNT) {
-        print("[FLOG][WARN] log region full, erasing all uploaded/pending logs\r\n");
-        s_dropped_count += s_pending_count;
-        erase_log_region();
+    /* Ring: write after the newest record. A used slot there is recycled
+     * sector by sector at write time (only the oldest logs are lost), instead
+     * of erasing the whole region, pending logs included, when it filled. */
+    if (newest_slot < APP_FLASH_LOG_SLOT_COUNT) {
+        s_next_write_slot = (uint16_t)((newest_slot + 1U) % APP_FLASH_LOG_SLOT_COUNT);
+    } else if (s_next_write_slot == APP_FLASH_LOG_SLOT_COUNT) {
+        s_next_write_slot = 0U;
     }
+}
+
+#define APP_FLASH_LOG_SLOTS_PER_SECTOR (W25Q_SECTOR_SIZE / APP_FLASH_LOG_SLOT_SIZE)
+
+/* Make the slot writable: if it is not erased, erase its 4 KB sector,
+ * dropping the (oldest) records held there. Caller holds the lock. */
+static uint8_t prepare_slot_locked(uint16_t slot)
+{
+    uint32_t magic = 0U;
+    if (!w25q_read(s_flash, slot_addr(slot), (uint8_t *)&magic, sizeof(magic))) return 0U;
+    if (magic == 0xFFFFFFFFUL) return 1U;
+
+    uint16_t first = (uint16_t)(slot - (slot % APP_FLASH_LOG_SLOTS_PER_SECTOR));
+    uint32_t lost = 0U;
+    for (uint16_t i = first; i < first + APP_FLASH_LOG_SLOTS_PER_SECTOR; i++) {
+        app_flash_log_record_t rr;
+        if (!w25q_read(s_flash, slot_addr(i), (uint8_t *)&rr, sizeof(rr)) || !record_crc_ok(&rr)) continue;
+        if (s_total_count > 0U) s_total_count--;
+        if (rr.uploaded_mark != APP_FLASH_LOG_UPLOADED_MARK_DONE) {
+            if (s_pending_count > 0U) s_pending_count--;
+            lost++;
+        }
+        s_slot_merge_count[i] = 0U;
+    }
+    s_dropped_count += lost;
+    if (lost) print("[FLOG][WARN] log store full: %lu oldest pending log(s) overwritten\r\n", (unsigned long)lost);
+    return w25q_erase_sector_4k(s_flash, slot_addr(first)) ? 1U : 0U;
 }
 
 uint8_t app_flash_log_init(W25Q_Handle *flash)
@@ -530,6 +552,7 @@ uint8_t app_flash_log_init(W25Q_Handle *flash)
     uint32_t id = w25q_read_jedec_id(s_flash);
     if (id == 0U || id == 0xFFFFFFUL) {
         print("[FLOG][ERR] W25Q not detected\r\n");
+        s_flash_missing = 1U;
         return 0U;
     }
 
@@ -560,13 +583,6 @@ uint8_t app_flash_log_write_incident(app_log_level_t level,
                                      uint32_t first_seen_tick)
 {
     if (!s_ready || !s_flash) return 0U;
-
-    if (!app_modbus_payload_has_valid_config()) {
-        print("[FLOG] write suppressed: waiting for valid config/apiKey module=%s event=%s\r\n",
-              module ? module : "",
-              event ? event : "");
-        return 0U;
-    }
 
     flash_log_lock();
 
@@ -609,10 +625,11 @@ uint8_t app_flash_log_write_incident(app_log_level_t level,
         return 1U;
     }
 
-    if (s_next_write_slot >= APP_FLASH_LOG_SLOT_COUNT) {
-        print("[FLOG][WARN] no free slot, erasing log region\r\n");
-        s_dropped_count += s_pending_count;
-        erase_log_region();
+    if (s_next_write_slot >= APP_FLASH_LOG_SLOT_COUNT) s_next_write_slot = 0U;
+    if (!prepare_slot_locked(s_next_write_slot)) {
+        print("[FLOG][ERR] could not prepare slot %u\r\n", (unsigned)s_next_write_slot);
+        flash_log_unlock();
+        return 0U;
     }
 
     app_flash_log_record_t r;
@@ -658,7 +675,7 @@ uint8_t app_flash_log_write_incident(app_log_level_t level,
 
     if (ok) {
         s_slot_merge_count[written_slot] = (r.value1 > 0) ? (uint32_t)r.value1 : 1UL;
-        s_next_write_slot++;
+        s_next_write_slot = (uint16_t)((s_next_write_slot + 1U) % APP_FLASH_LOG_SLOT_COUNT);
         s_pending_count++;
         s_total_count++;
 
@@ -695,30 +712,52 @@ uint8_t app_flash_log_write(app_log_level_t level,
                                         0U);
 }
 
+/* Oldest pending record = lowest seq, not lowest slot: the region is a
+ * ring, so after it wraps low slots hold newer logs (before 2026-11-18 they
+ * were uploaded first). Only the record headers are read to choose; the
+ * chosen record is then read whole and CRC-checked. */
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t record_size;
+    uint32_t crc32;
+    uint32_t seq;
+    uint32_t tick_ms;
+    uint32_t uploaded_mark;
+} app_flash_log_head_t;
+
 static uint8_t read_oldest_pending(uint16_t *slot_out, app_flash_log_record_t *rec_out)
 {
     app_flash_log_record_t r;
+    static uint8_t skip[APP_FLASH_LOG_SLOT_COUNT / 8U];
 
     if (!slot_out || !rec_out) return 0U;
+    memset(skip, 0, sizeof(skip));
 
-    for (uint16_t i = 0; i < APP_FLASH_LOG_SLOT_COUNT; i++) {
+    for (uint8_t attempt = 0U; attempt < 4U; attempt++) {
+        uint16_t best = 0xFFFFU;
+        uint32_t best_seq = 0xFFFFFFFFUL;
+        for (uint16_t i = 0; i < APP_FLASH_LOG_SLOT_COUNT; i++) {
+            app_flash_log_head_t h;
+            if (skip[i / 8U] & (uint8_t)(1U << (i % 8U))) continue;
+            if (!w25q_read(s_flash, slot_addr(i), (uint8_t *)&h, sizeof(h))) continue;
+            if (h.magic != APP_FLASH_LOG_MAGIC) continue;
+            if (h.uploaded_mark == APP_FLASH_LOG_UPLOADED_MARK_DONE) continue;
+            if (h.seq < best_seq) {
+                best_seq = h.seq;
+                best = i;
+            }
+        }
+        if (best == 0xFFFFU) return 0U;
+
         memset(&r, 0, sizeof(r));
-
-        if (!w25q_read(s_flash, slot_addr(i), (uint8_t *)&r, sizeof(r))) {
-            continue;
+        if (w25q_read(s_flash, slot_addr(best), (uint8_t *)&r, sizeof(r)) &&
+            record_crc_ok(&r) && r.uploaded_mark != APP_FLASH_LOG_UPLOADED_MARK_DONE) {
+            *slot_out = best;
+            *rec_out = r;
+            return 1U;
         }
-
-        if (!record_crc_ok(&r)) {
-            continue;
-        }
-
-        if (r.uploaded_mark == APP_FLASH_LOG_UPLOADED_MARK_DONE) {
-            continue;
-        }
-
-        *slot_out = i;
-        *rec_out = r;
-        return 1U;
+        skip[best / 8U] |= (uint8_t)(1U << (best % 8U)); /* torn record: try the next oldest */
     }
 
     return 0U;
@@ -740,11 +779,6 @@ uint8_t app_flash_log_upload_one(void)
 {
     if (!s_ready || !s_flash) {
         print("[FLOG_UPLOAD] not ready\r\n");
-        return 0U;
-    }
-
-    if (!app_modbus_payload_has_valid_config()) {
-        print("[FLOG_UPLOAD] skipped: waiting for valid config/apiKey\r\n");
         return 0U;
     }
 
@@ -819,21 +853,16 @@ uint8_t app_flash_log_upload_one(void)
                              &gprs_status,
                              &mqtt_status);
 
-    const char *api_key = app_modbus_payload_get_api_key();
-    if (!api_key || api_key[0] == '\0') {
-        api_key = "";
-    }
-
-    char api_key_esc[192];
-    json_escape(api_key_esc, sizeof(api_key_esc), api_key);
-
+    /* No apiKey (2026-11-18): it went to the broker in every log, where any
+     * holder of the broker login could read every unit's key. The platform
+     * attributes MQTT logs by the topic's IMEI, like telemetry and events. */
     char json[APP_FLASH_LOG_JSON_LEN];
 
     snprintf(json, sizeof(json),
              "{"
              "\"type\":\"log\","
              "\"v\":2,"
-             "\"apiKey\":\"%s\","
+             "\"seq\":%lu,"
              "\"imei\":\"%s\","
              "\"fid\":\"%s-%lu\","
              "\"s\":\"%s\","
@@ -868,7 +897,7 @@ uint8_t app_flash_log_upload_one(void)
                 "\"sd\":\"%s\""
              "}"
              "}",
-             api_key_esc,
+             (unsigned long)r.seq,
              imei,
              event,
              (unsigned long)record_first_seen_tick(&r),
@@ -940,15 +969,46 @@ uint8_t app_flash_log_upload_one(void)
 
     return marked;
 }
+/* The log store itself is the W25Q: when it is missing nothing can be
+ * stored, so the failure is published once, directly, as FATAL. */
+static uint8_t report_flash_missing(void)
+{
+    if (!connectivity_is_online() || topic_d2c_logs[0] == '\0') return 0U;
+    char ts[32];
+    char json[384];
+    rtc_get_datetime_strings(ts, sizeof(ts));
+    snprintf(json, sizeof(json),
+             "{\"type\":\"log\",\"v\":2,\"imei\":\"%s\",\"fid\":\"W25Q_NOT_DETECTED-%lu\","
+             "\"s\":\"fail\",\"ts\":\"%s\",\"up\":%lu,\"fw\":\"%s\",\"lvl\":\"FATAL\","
+             "\"module\":\"STORAGE\",\"event\":\"W25Q_NOT_DETECTED\","
+             "\"msg\":\"external flash not detected: no config storage, no offline logs\","
+             "\"cnt\":1,\"stage\":\"FLASH_INIT\",\"action\":\"SERVICE\"}",
+             imei, (unsigned long)HAL_GetTick(), ts, (unsigned long)HAL_GetTick(),
+             APP_FIRMWARE_VERSION);
+    return connectivity_publish(topic_d2c_logs, json);
+}
+
 uint8_t app_flash_log_upload_due(void)
 {
     uint32_t now = HAL_GetTick();
 
-    if (app_flash_log_pending_count() == 0U) {
+    if (s_flash_missing && !s_flash_missing_reported) {
+        if ((now - s_last_upload_attempt_tick) >= 10000UL) {
+            s_last_upload_attempt_tick = now;
+            if (report_flash_missing()) s_flash_missing_reported = 1U;
+        }
         return 0U;
     }
 
-    if ((now - s_last_upload_attempt_tick) < APP_FLASH_LOG_UPLOAD_INTERVAL_MS) {
+    uint16_t pending = app_flash_log_pending_count();
+    if (pending == 0U) {
+        return 0U;
+    }
+
+    /* One log a minute took over 8 h to drain the 512-slot store after an
+     * outage; with a backlog send one every 10 s (still low priority). */
+    uint32_t interval = (pending > 1U) ? APP_FLASH_LOG_BACKLOG_INTERVAL_MS : APP_FLASH_LOG_UPLOAD_INTERVAL_MS;
+    if ((now - s_last_upload_attempt_tick) < interval) {
         return 0U;
     }
 

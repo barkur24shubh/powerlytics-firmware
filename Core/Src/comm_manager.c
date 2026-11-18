@@ -296,7 +296,7 @@ static void request_soft_reset(comm_error_t err,
     s_last_modem_reset_request_tick = now;
     modem_boot_grace_start(event);
 
-    app_log_critical(APP_LOG_FATAL,
+    app_log_critical(APP_LOG_ERROR,
                      "MODEM",
                      event,
                      message,
@@ -551,7 +551,7 @@ void comm_manager_run_once(void)
             }
             else if (s_consecutive_sim_fail == THRESHOLD_5X)
             {
-                log_threshold_failure(APP_LOG_FATAL,
+                log_threshold_failure(APP_LOG_ERROR,
                                       "COMM",
                                       "SIM_NOT_READY_5X",
                                       "SIM not ready 5 times",
@@ -632,7 +632,7 @@ void comm_manager_run_once(void)
             }
             else if (s_consecutive_network_fail == THRESHOLD_5X)
             {
-                log_threshold_failure(APP_LOG_FATAL,
+                log_threshold_failure(APP_LOG_ERROR,
                                       "COMM",
                                       "NETWORK_REG_FAILED_5X",
                                       "network registration failed 5 times",
@@ -714,7 +714,7 @@ void comm_manager_run_once(void)
             }
             else if (s_consecutive_gprs_fail == THRESHOLD_5X)
             {
-                log_threshold_failure(APP_LOG_FATAL,
+                log_threshold_failure(APP_LOG_ERROR,
                                       "COMM",
                                       "GPRS_FAILED_5X",
                                       "GPRS failed 5 times, falling back to network attach",
@@ -915,7 +915,7 @@ void comm_manager_run_once(void)
               comm_manager_error_name(s_last_error),
               s_consecutive_soft_reset_fail);
 
-        app_log_critical(APP_LOG_FATAL,
+        app_log_critical(APP_LOG_ERROR,
                          "MODEM",
                          "SOFT_RESET_STARTED",
                          "modem soft reset started",
@@ -952,7 +952,7 @@ void comm_manager_run_once(void)
         {
             s_consecutive_soft_reset_fail++;
 
-            app_log_critical(APP_LOG_FATAL,
+            app_log_critical(APP_LOG_ERROR,
                              "MODEM",
                              "SOFT_RESET_FAILED",
                              "modem did not respond after soft reset",
@@ -967,7 +967,7 @@ void comm_manager_run_once(void)
              */
             if (s_consecutive_soft_reset_fail >= MODEM_RESET_MCU_RESET_THRESHOLD)
             {
-                app_log_critical(APP_LOG_FATAL,
+                app_log_critical(APP_LOG_ERROR,
                                  "MCU",
                                  "RESET_AFTER_MODEM_RESET_FAILS",
                                  "MCU reset after repeated modem reset recovery failures",
@@ -1085,7 +1085,7 @@ void comm_manager_report_publish_result(uint8_t ok)
     {
         if (s_consecutive_publish_fail == THRESHOLD_5X)
         {
-            log_threshold_failure(APP_LOG_FATAL,
+            log_threshold_failure(APP_LOG_ERROR,
                                   "MQTT",
                                   "PUBLISH_FAILED_5X",
                                   publish_msg,

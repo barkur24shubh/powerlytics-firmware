@@ -72,8 +72,8 @@ static void event_service(void)
     app_powerlytics_engine_seq_service();
     uint32_t drops = app_powerlytics_engine_events_dropped();
     if (drops != reported_drops && (last_log_tick == 0U || (HAL_GetTick() - last_log_tick) >= 60000U)) {
-        app_log_push(APP_LOG_WARN, "EVENT", "EVENT_QUEUE_FULL", "events dropped: event queue full",
-                     (int32_t)(drops - reported_drops), (int32_t)drops);
+        app_log_critical(APP_LOG_WARN, "EVENT", "EVENT_QUEUE_FULL", "events dropped: event queue full",
+                     (int32_t)(drops - reported_drops), (int32_t)drops, "NONE");
         print("[EVENT][WARN] %lu events dropped (queue full), total %lu\r\n",
               (unsigned long)(drops - reported_drops), (unsigned long)drops);
         reported_drops = drops;
@@ -633,7 +633,7 @@ void app_gateway_runtime_task(void *argument)
                     print("[RELAY] connection lost for %lu ms (limit %lu min), applying safe states\r\n",
                           (unsigned long)(HAL_GetTick() - s_link_lost_since), (unsigned long)minutes);
                     app_relay_apply_safe_states(flags & 0xFFU, "connection lost");
-                    app_log_push(APP_LOG_WARN, "RELAY", "LINK_LOSS_SAFE_STATE", "relays set to safe state after connection loss", (int32_t)minutes, 0);
+                    app_log_critical(APP_LOG_WARN, "RELAY", "LINK_LOSS_SAFE_STATE", "relays set to safe state after connection loss", (int32_t)minutes, 0, "RELAY_SAFE_STATE");
                     s_link_loss_safe_applied = 1U;
                 }
             }

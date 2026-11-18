@@ -318,3 +318,14 @@ Open (proposals, not built): `latchMode` on the device; sensor-fault detection f
 | 36 | No cross-workspace access | ✅ devices, device detail, events, actuations, deployments, alert rules/events, audit log, event stream: 403 for a non-member (production, read-only probes from the owner's second account). |
 | 37 | Viewer cannot command/deploy/ack/OTA | ✅ code review: every workspace write route needs OWNER/ADMIN/OPERATOR; OTA and admin routes need a platform admin. |
 | 38 | Readout protection in release | ❌ bench RDP level 0, no write protection, **brown-out reset off**. 1.0.13 reports `security:{tls, rdp, bor}` in hello; the admin device page shows it. Setting RDP 1, WRP on the bootloader sectors and BOR level 3 belongs in production programming (section 27). |
+
+## 16. Device error logging (2026-11-18, firmware 1.0.14)
+
+| # | Test | Before | 1.0.14 |
+|---|---|---|---|
+| 12 | Every failure path leaves a structured log in the cloud | ❌ most paths used the RAM-only log, never uploaded (relay link-loss safe state, dropped acks, event queue full, dropped downlinks, unverified TLS, config flash save/verify failures); logs and boot/fault records were thrown away until the unit had a config; a missing W25Q was only printed | ✅ those events are persisted and uploaded; logs are kept and uploaded before the first config; a missing W25Q is published once as FATAL `STORAGE/W25Q_NOT_DETECTED` |
+| 13 | Offline logs uploaded once, in order | ❌ uploaded records failed their own CRC (seq restarted at 1 every boot); a full store erased everything incl. pending; oldest = lowest slot, not lowest seq; 1 log/min (512 slots ≈ 8.5 h) | ✅ CRC ignores the upload mark (bench: seq 21 → 23 → 26 across reboots); ring recycles only the oldest sector; oldest = lowest seq (bench: 26 then 27); backlog drains every 10 s |
+| 14 | Flood control; WARN/ERROR never dropped | ✅ incident merge (30 min), 1 flash write / 30 s, platform limits only INFO/DEBUG | unchanged |
+| 15 | FATAL raises a critical alert; routine conditions never FATAL | ❌ SIM not ready 5×, MQTT connect/publish/subscribe 5×, GPRS 5×, modem soft reset → FATAL (critical alert each time); every boot logged ERROR; a crash only ERROR; missing SD card ERROR | ✅ routine → ERROR; crash (`MCU_FAULT_RESET`, `FAULT_*` boot) → FATAL; boot level by cause (power-on/OTA INFO, brown-out/modem recovery WARN, watchdog ERROR); SD absent INFO |
+| 16 | API key never sent to the broker | ❌ every log carried `apiKey` | ✅ removed; platform attributes MQTT logs by topic IMEI (backend change, must deploy before 1.0.14 ships) |
+| 17 | Log viewer searchable, filterable, ordered | ✅ level/module/event/text search/sort by received time work; ❌ each log stored once per API instance (2–4 copies); a clock ahead pinned rows on top | ✅ (backend) stored once by `seq`/`fid` + ts; device times > 5 min ahead replaced by server time |

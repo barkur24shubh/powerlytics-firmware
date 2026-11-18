@@ -80,7 +80,7 @@ static void note_drop(const char *reason, int len)
     s_dropped++;
     print("[MQTT RX][ERR] downlink dropped reason=%s len=%d dropped=%lu\r\n",
           reason, len, (unsigned long)s_dropped);
-    app_log_push(APP_LOG_WARN, "MQTT", "DOWNLINK_DROPPED", reason, len, (int32_t)s_dropped);
+    app_log_critical(APP_LOG_WARN, "MQTT", "DOWNLINK_DROPPED", reason, len, (int32_t)s_dropped, "NONE");
 }
 
 /* Called with the "+CMQTTRXSTART:" line already taken off the ring. */

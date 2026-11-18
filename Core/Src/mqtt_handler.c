@@ -1310,8 +1310,8 @@ uint8_t MQTT_Connect(const char *host, int port, const char *user, const char *p
         s_tls_fail_streak_started = 0U;
         s_tls_try_insecure = 0U;
     } else {
-        app_log_push(APP_LOG_WARN, "MQTT", "TLS_UNVERIFIED",
-                     "connected without broker certificate check (fallback)", 0, 0);
+        app_log_critical(APP_LOG_WARN, "MQTT", "TLS_UNVERIFIED",
+                     "connected without broker certificate check (fallback)", 0, 0, "NONE");
     }
     return 1;
 
@@ -1356,7 +1356,7 @@ uint8_t MQTT_Connect(const char *host, int port, const char *user, const char *p
                              0,
                              "MQTT_RECONNECT");
         } else if (s_consecutive_mqtt_connect_fail == 5U) {
-            app_log_critical(APP_LOG_FATAL,
+            app_log_critical(APP_LOG_ERROR,
                              "MQTT",
                              "CONNECT_FAILED_5X",
                              failure_msg,
@@ -1440,7 +1440,7 @@ fail:
                          0,
                          "MQTT_RECONNECT");
     } else if (s_consecutive_mqtt_subscribe_fail == 5U) {
-        app_log_critical(APP_LOG_FATAL,
+        app_log_critical(APP_LOG_ERROR,
                          "MQTT",
                          "SUBSCRIBE_FAILED_5X",
                          "MQTT subscribe failed 5 times",
@@ -1856,7 +1856,7 @@ uint8_t MQTT_FlushActuationAcks(void)
             }
             if (s->attempts >= ACT_ACK_MAX_ATTEMPTS) {
                 print("[ACT][ERR] ack dropped after %u attempts\r\n", (unsigned)s->attempts);
-                app_log_push(APP_LOG_ERROR, "ACT", "ACK_DROPPED", "ack not accepted after retries", s->attempts, 0);
+                app_log_critical(APP_LOG_ERROR, "ACT", "ACK_DROPPED", "ack not accepted after retries", s->attempts, 0, "NONE");
             } else {
                 print("[ACT][WARN] ack publish failed stage=%s attempts=%u, will retry\r\n",
                       MQTT_LastPublishStage(), (unsigned)s->attempts);
@@ -2258,12 +2258,12 @@ static void handle_downlink_cjson_inner(const char *payload_str)
           work_cfg->point_count);
 
     if (!modbus_cfg_save(work_cfg)) {
-        app_log_push(APP_LOG_ERROR,
+        app_log_critical(APP_LOG_ERROR,
                      "CONFIG",
                      "FLASH_SAVE_FAILED",
                      "modbus config flash save failed",
                      0,
-                     0);
+                     0, "KEEP_PREVIOUS_CONFIG");
 
         publish_config_status(id_str, deployment_str, "error", "flash_write_error");
 
@@ -2274,12 +2274,12 @@ static void handle_downlink_cjson_inner(const char *payload_str)
     memset(work_cfg, 0, sizeof(*work_cfg));
 
     if (!modbus_cfg_load(work_cfg)) {
-        app_log_push(APP_LOG_ERROR,
+        app_log_critical(APP_LOG_ERROR,
                      "CONFIG",
                      "FLASH_RELOAD_FAILED",
                      "saved config could not be reloaded",
                      0,
-                     0);
+                     0, "KEEP_PREVIOUS_CONFIG");
 
         publish_config_status(id_str, deployment_str, "error", "flash_reload_error");
 
@@ -2288,12 +2288,12 @@ static void handle_downlink_cjson_inner(const char *payload_str)
     }
 
     if (strcmp(work_cfg->config_id, id_str) != 0) {
-        app_log_push(APP_LOG_ERROR,
+        app_log_critical(APP_LOG_ERROR,
                      "CONFIG",
                      "FLASH_VERIFY_FAILED",
                      "saved configId mismatch after reload",
                      0,
-                     0);
+                     0, "KEEP_PREVIOUS_CONFIG");
 
         publish_config_status(id_str, deployment_str, "error", "flash_verify_error");
 
@@ -2311,12 +2311,12 @@ static void handle_downlink_cjson_inner(const char *payload_str)
 
     if (!app_modbus_payload_has_valid_config() ||
         strcmp(app_modbus_payload_get_config_id(), id_str) != 0) {
-        app_log_push(APP_LOG_ERROR,
+        app_log_critical(APP_LOG_ERROR,
                      "CONFIG",
                      "APPLY_VERIFY_FAILED",
                      "runtime config verify failed after apply",
                      0,
-                     0);
+                     0, "KEEP_PREVIOUS_CONFIG");
 
         publish_config_status(id_str, deployment_str, "error", "apply_verify_error");
 
@@ -2327,12 +2327,12 @@ static void handle_downlink_cjson_inner(const char *payload_str)
     print("[CONFIG] applied telemetryInterval=%lu ms\r\n",
           (unsigned long)app_modbus_payload_get_telemetry_interval_ms());
 
-    app_log_push(APP_LOG_INFO,
+    app_log_critical(APP_LOG_INFO,
                  "CONFIG",
                  "APPLIED",
                  "config saved and applied",
                  0,
-                 0);
+                 0, "NONE");
 
     publish_config_status(id_str, deployment_str, "APPLIED", NULL);
 
