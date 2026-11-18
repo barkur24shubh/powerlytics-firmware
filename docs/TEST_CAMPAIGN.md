@@ -12,6 +12,7 @@ Tags: [FW] device only · [HIL] needs physical stimulus · [E2E] device to UI ·
 | G3 | Decommission prompt should say the step is permanent | 2026-11-17 | Users may think the unit can be reused |
 | — | Boot with no SIM / antenna / Modbus / secondary MCU | 2026-11-17 | Needs bench hardware changes |
 | — | Boot-to-online time budget (now ~44 s) | 2026-11-17 | No target agreed |
+| G4 | Per-unit broker login: username = IMEI, secret written at manufacture, EMQX topic rules limiting each unit to `d2c/<imei>/#` and `c2d/<imei>/#`, platform-only publish to `c2d`; then remove the shared login from the image (FH-028, ISS-125) | 2026-11-18 | Owner: "we definitely need to implement it". Today one leaked image or SWD read controls every unit; command expiry/config revision replay checks only matter after this |
 
 The tests named `GAP:` in `packages/device-core/src/onboarding.flow.test.ts` (backend) describe G1 and G2 as they are today; flip them when the gaps are fixed.
 
