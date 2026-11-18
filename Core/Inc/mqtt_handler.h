@@ -26,6 +26,8 @@ uint8_t MQTT_LastPublishAttempted(void);
 const char *MQTT_LastPublishStage(void);
 void    MQTT_SetOtaFlash(W25Q_Handle *flash);
 uint8_t MQTT_OtaIsBusy(void);
+/* 1 when the current broker connection verified the server certificate. */
+uint8_t MQTT_TlsVerified(void);
 uint8_t MQTT_ReportOtaBootResultOnce(void);
 /* Queued actuation acks: publish at priority, retry on failure. Returns the
  * number still queued. */

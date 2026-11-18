@@ -1,4 +1,5 @@
 #include "app_gateway_runtime.h"
+#include "mqtt_handler.h"
 
 #include "cmsis_os.h"
 #include "FreeRTOS.h"
@@ -131,9 +132,19 @@ static uint8_t publish_hello_once(void)
 #ifdef BOARD_MODBUS_UART_INSTANCE
     idx += snprintf(payload + idx, sizeof(payload) - (size_t)idx, ",\"MI\":[\"MI_1\"]");
 #endif
-    idx += snprintf(payload + idx, sizeof(payload) - (size_t)idx, "},\"bootId\":\"%s\",\"bootCount\":%lu,\"resetReason\":\"%s\",\"uptimeMs\":%lu,\"presenceMs\":%lu}",
+    /* Security posture (2026-11-18): broker certificate checked or not,
+     * flash readout protection level (0 = SWD can read the image and its
+     * broker credentials), brown-out reset level (3 = off). */
+    uint32_t optcr = FLASH->OPTCR;
+    uint8_t rdp_byte = (uint8_t)((optcr >> 8) & 0xFFU);
+    unsigned rdp = (rdp_byte == 0xAAU) ? 0U : ((rdp_byte == 0xCCU) ? 2U : 1U);
+    unsigned bor = (unsigned)((optcr >> 2) & 0x3U); /* 0..2 = level 3..1, 3 = off */
+    const char *bor_name = (bor == 3U) ? "off" : ((bor == 0U) ? "3" : ((bor == 1U) ? "2" : "1"));
+    idx += snprintf(payload + idx, sizeof(payload) - (size_t)idx, "},\"bootId\":\"%s\",\"bootCount\":%lu,\"resetReason\":\"%s\",\"uptimeMs\":%lu,\"presenceMs\":%lu,"
+        "\"security\":{\"tls\":\"%s\",\"rdp\":%u,\"bor\":\"%s\"}}",
         app_boot_id, (unsigned long)app_boot_count, app_reset_reason, (unsigned long)HAL_GetTick(),
-        (unsigned long)ONLINE_IDLE_MQTT_KEEPALIVE_MS);
+        (unsigned long)ONLINE_IDLE_MQTT_KEEPALIVE_MS,
+        MQTT_TlsVerified() ? "verified" : "unverified", rdp, bor_name);
 #undef APPEND_CHANNELS
     if (idx < 0 || idx >= (int)sizeof(payload)) return 0U;
     if (connectivity_publish_priority(topic_d2c_message, payload)) {

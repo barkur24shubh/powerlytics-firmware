@@ -9,6 +9,7 @@
  */
 
 #include "mqtt_handler.h"
+#include "mqtt_root_ca.h"
 #include "app_gateway_platform.h"
 #include "main.h"
 #include "app_board_io.h"
@@ -57,6 +58,29 @@ uint32_t lastMQTTSuccessTime = 0;
  * - Cloud upload must be done later by app_log_critical_flush_cloud_once().
  */
 static uint8_t s_consecutive_mqtt_connect_fail = 0;
+
+/* Broker certificate check (2026-11-18). Before this the MQTT TLS context
+ * used authmode 0: any server could pose as the broker and collect the
+ * broker credentials or send commands. Now the chain is verified against
+ * the bundled public roots (DigiCert Global Root G2 for EMQX Cloud, plus
+ * DigiCert Global Root CA and ISRG Root X1 in case the broker changes CA).
+ * Dates are not checked (ignorelocaltime) so a wrong modem clock cannot
+ * keep the unit offline. Availability guard: if no verified connection has
+ * succeeded for MQTT_TLS_FALLBACK_MS, or the CA file cannot be installed,
+ * every other attempt connects without verification so the fleet can still
+ * be reached (for example to ship new roots by OTA); the mode is reported
+ * in hello as "tls". */
+#define MQTT_CA_FILE            "mqtt_roots_v1.pem"
+#define MQTT_TLS_FALLBACK_MS    (24UL * 3600UL * 1000UL)
+static uint8_t  s_tls_verified = 0U;        /* mode of the current connection */
+static uint8_t  s_tls_fail_streak_started = 0U;
+static uint32_t s_tls_fail_since = 0U;      /* first failed verified attempt of the streak */
+static uint8_t  s_tls_try_insecure = 0U;    /* alternate attempts once in fallback */
+
+uint8_t MQTT_TlsVerified(void)
+{
+    return s_tls_verified;
+}
 static uint8_t s_consecutive_mqtt_subscribe_fail = 0;
 
 /* Updated Prototypes */
@@ -1179,6 +1203,7 @@ uint8_t MQTT_Connect(const char *host, int port, const char *user, const char *p
 {
     char cmd[180];
     const char *fail_stage = "START";
+    uint8_t verify = 0U;
 
     /* Fallback to config.h if arguments are NULL */
     const char *host_u = (host && host[0]) ? host : MQTT_HOST_URI;
@@ -1204,11 +1229,31 @@ uint8_t MQTT_Connect(const char *host, int port, const char *user, const char *p
     (void)SIM800_SendATCommand2("AT+CMQTTSTOP", "OK", 5000, true);
     osDelay(1000);
 
-    /* 2. TLS Setup (Using your working "No-Verify" logic) */
+    /* 2. TLS setup: verify the broker chain (see MQTT_CA_FILE above). */
+    verify = 1U;
+    uint8_t ca_ok = modem_tls_ensure_ca(MQTT_CA_FILE, mqtt_root_ca_pem, (uint16_t)MQTT_ROOT_CA_PEM_SIZE);
+    uint8_t in_fallback = (!ca_ok) ||
+        (s_tls_fail_streak_started && (uint32_t)(HAL_GetTick() - s_tls_fail_since) >= MQTT_TLS_FALLBACK_MS);
+    if (in_fallback) {
+        verify = s_tls_try_insecure ? 0U : 1U;
+        if (!ca_ok) verify = 0U;
+        s_tls_try_insecure ^= 1U;
+    }
+    print("[MQTT] TLS %s\r\n", verify ? "verifying broker certificate" : "WITHOUT certificate check (fallback)");
+
     fail_stage = "SSL_VERSION";
     if (!SendCommandWithRetry("AT+CSSLCFG=\"sslversion\",0,4", "OK", 5000, 3)) goto fail;
     fail_stage = "SSL_AUTHMODE";
-    if (!SendCommandWithRetry("AT+CSSLCFG=\"authmode\",0,0", "OK", 5000, 3)) goto fail;
+    if (verify) {
+        if (!SendCommandWithRetry("AT+CSSLCFG=\"authmode\",0,1", "OK", 5000, 3)) goto fail;
+        fail_stage = "SSL_CACERT";
+        snprintf(cmd, sizeof(cmd), "AT+CSSLCFG=\"cacert\",0,\"%s\"", MQTT_CA_FILE);
+        if (!SendCommandWithRetry(cmd, "OK", 5000, 3)) goto fail;
+        fail_stage = "SSL_IGNORETIME";
+        if (!SendCommandWithRetry("AT+CSSLCFG=\"ignorelocaltime\",0,1", "OK", 5000, 3)) goto fail;
+    } else {
+        if (!SendCommandWithRetry("AT+CSSLCFG=\"authmode\",0,0", "OK", 5000, 3)) goto fail;
+    }
 
     /* SNI Setup - Crucial for cloud brokers like HiveMQ */
     if (!SendCommandWithRetry("AT+CSSLCFG=\"enableSNI\",0,1", "OK", 5000, 3)) {
@@ -1260,9 +1305,23 @@ uint8_t MQTT_Connect(const char *host, int port, const char *user, const char *p
     modem_urc_clear_disconnect_flags();
     lastMQTTSuccessTime = HAL_GetTick();
     s_consecutive_mqtt_connect_fail = 0;
+    s_tls_verified = verify;
+    if (verify) {
+        s_tls_fail_streak_started = 0U;
+        s_tls_try_insecure = 0U;
+    } else {
+        app_log_push(APP_LOG_WARN, "MQTT", "TLS_UNVERIFIED",
+                     "connected without broker certificate check (fallback)", 0, 0);
+    }
     return 1;
 
     fail:
+        if (verify && (strcmp(fail_stage, "CONNECT_URC") == 0 || strcmp(fail_stage, "CONNECT_OK") == 0)) {
+            if (!s_tls_fail_streak_started) {
+                s_tls_fail_streak_started = 1U;
+                s_tls_fail_since = HAL_GetTick();
+            }
+        }
         char failure_msg[96];
 
         /*

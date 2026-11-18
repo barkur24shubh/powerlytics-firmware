@@ -416,7 +416,7 @@ static uint8_t modem_http_send_wait_ok_locked(const char *cmd,
     return 0U;
 }
 
-static uint8_t modem_http_ca_file_exists_locked(uint8_t *out_present)
+static uint8_t modem_ca_file_exists_locked(const char *file, uint8_t *out_present)
 {
     char line[192];
     uint32_t start = HAL_GetTick();
@@ -436,7 +436,7 @@ static uint8_t modem_http_ca_file_exists_locked(uint8_t *out_present)
         }
 
         trim_crlf(line);
-        if (strstr(line, HTTP_OTA_CA_FILE)) present = 1U;
+        if (strstr(line, file)) present = 1U;
         if (strstr(line, "ERROR") || strstr(line, "+CME ERROR")) return 0U;
         if (!strcmp(line, "OK")) {
             *out_present = present;
@@ -523,7 +523,7 @@ static uint8_t modem_http_provision_ca_locked(void)
     }
 
     if (s_ota_ca_ready) return 1U;
-    if (!modem_http_ca_file_exists_locked(&present)) {
+    if (!modem_ca_file_exists_locked(HTTP_OTA_CA_FILE, &present)) {
         modem_http_set_last_error("ota_ca_list_failed");
         return 0U;
     }
@@ -553,7 +553,7 @@ static uint8_t modem_http_provision_ca_locked(void)
             return 0U;
         }
 
-        if (!modem_http_ca_file_exists_locked(&present) || !present) {
+        if (!modem_ca_file_exists_locked(HTTP_OTA_CA_FILE, &present) || !present) {
             modem_http_set_last_error("ota_ca_install_unverified");
             return 0U;
         }
@@ -2508,6 +2508,40 @@ static void mh_civil_from_days(int64_t z, int *y, int *m, int *d)
 
 #define MH_IST_OFFSET_S   (5 * 3600 + 30 * 60)
 #define MH_RTC_RESYNC_S   5
+
+/* Make sure a CA file is on the modem (AT+CCERTDOWN once; the modem keeps
+ * it across power cycles). Used for the MQTT broker roots. */
+uint8_t modem_tls_ensure_ca(const char *file, const unsigned char *pem, uint16_t len)
+{
+    char cmd[96];
+    uint8_t present = 0U;
+    uint8_t ok = 0U;
+
+    if (!file || !pem || len == 0U) return 0U;
+    if (g_at_mutex) osMutexAcquire(g_at_mutex, osWaitForever);
+    at_rx_active = 1;
+    u2_flush_all();
+
+    if (!modem_ca_file_exists_locked(file, &present)) goto done;
+    if (!present) {
+        int n = snprintf(cmd, sizeof(cmd), "AT+CCERTDOWN=\"%s\",%u", file, (unsigned)len);
+        if (n < 0 || (size_t)n >= sizeof(cmd)) goto done;
+        u2_flush_all();
+        print("[TLS] installing CA file %s (%u bytes)\r\n", file, (unsigned)len);
+        u2_send_cmd(cmd);
+        if (!u2rx_wait_for(&g_u2rx, ">", 8000U)) goto done;
+        if (HAL_UART_Transmit(&huart6, (uint8_t *)pem, len, 10000U) != HAL_OK ||
+            !modem_http_wait_ok_after_data_locked(10000U)) goto done;
+        if (!modem_ca_file_exists_locked(file, &present) || !present) goto done;
+    }
+    ok = 1U;
+
+done:
+    at_rx_active = 0;
+    if (g_at_mutex) osMutexRelease(g_at_mutex);
+    if (!ok) print("[TLS][ERR] CA file %s not available\r\n", file);
+    return ok;
+}
 
 uint8_t modem_sync_rtc_from_network(void)
 {

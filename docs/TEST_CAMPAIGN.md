@@ -305,3 +305,15 @@ Rule state machine moved to `Core/Src/app_rule_eval.c`; host tests `scripts/rule
 Platform findings during the bench run (backend branch `feature/rule-alarm-fixes`): event `reason`/`suppressed` were stripped by the stored-event schema; a deploy sent while the unit was restarting stayed SENT forever (now resent on the next hello, at most 3 times, and older unacknowledged ones become SUPERSEDED once a newer one is applied). Platform refuses impossible rules itself (400 with a clear message), so the device check is a backstop.
 
 Open (proposals, not built): `latchMode` on the device; sensor-fault detection for 4–20 mA (NAMUR NE43 < 3.6 mA / > 21 mA); more than 2 rules per point (L/LL/H/HH); alarm state across power loss needs VBAT.
+
+## 23. Security (2026-11-18, firmware 1.0.13)
+
+| # | Test | Result |
+|---|---|---|
+| 33 | One unit cannot act as another on the broker | ❌ **open (design)**: every unit uses one shared broker username/password, compiled into the image; whoever has it can publish and subscribe as any unit. Needs per-unit broker credentials + topic ACL (proposal). |
+| 34 | Replayed command rejected | ⚠️ partial: relay commands are deduplicated (last 32 ids) and expire after 60 s, but a command **without** `expiresAt` is still accepted (legacy), and configs have no replay check (`deploymentRevision` not compared). Only reachable with broker access, so it follows #33. |
+| 35 | No broker credentials in the image | ❌ username, password, host and APN are plain text in the app .bin (and so in every OTA artifact). Goes away with per-unit credentials (#33). |
+| — | Broker certificate checked | ❌ → ✅ **fixed in 1.0.13**: was `authmode 0` (any server could pose as the broker). Now the chain is verified against bundled public roots (DigiCert Global Root G2 for EMQX Cloud; DigiCert Global Root CA and ISRG Root X1 as spares), dates ignored. Bench: verified connect in 3.5 s; negative test with only ISRG Root X1 trusted → handshake refused (`+CMQTTCONNECT: 0,32`). Fallback: after 24 h without a verified connection (or if the CA file cannot be installed) every other attempt connects unverified so the fleet stays reachable; reported in hello. |
+| 36 | No cross-workspace access | ✅ devices, device detail, events, actuations, deployments, alert rules/events, audit log, event stream: 403 for a non-member (production, read-only probes from the owner's second account). |
+| 37 | Viewer cannot command/deploy/ack/OTA | ✅ code review: every workspace write route needs OWNER/ADMIN/OPERATOR; OTA and admin routes need a platform admin. |
+| 38 | Readout protection in release | ❌ bench RDP level 0, no write protection, **brown-out reset off**. 1.0.13 reports `security:{tls, rdp, bor}` in hello; the admin device page shows it. Setting RDP 1, WRP on the bootloader sectors and BOR level 3 belongs in production programming (section 27). |
