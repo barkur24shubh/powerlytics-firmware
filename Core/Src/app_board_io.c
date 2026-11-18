@@ -749,6 +749,17 @@ static int8_t relay_index_from_key(const char *port_key)
  * *reason is set on refusal. */
 static uint32_t s_relay_last_change_tick[5];
 static uint8_t  s_relay_changed_once[5];
+static uint32_t s_relay_last_command_tick;
+
+uint32_t app_relay_last_command_tick(void)
+{
+    return s_relay_last_command_tick;
+}
+
+uint8_t app_relay_count(void)
+{
+    return RELAY_COUNT;
+}
 
 uint8_t app_relay_command(const char *port_key, uint8_t on, const char **reason)
 {
@@ -757,6 +768,7 @@ uint8_t app_relay_command(const char *port_key, uint8_t on, const char **reason)
         if (reason) *reason = "unknown_port";
         return 0U;
     }
+    s_relay_last_command_tick = HAL_GetTick() | 1U;
     uint8_t current = app_relay_get_by_key(port_key);
     if ((current ? 1U : 0U) != (on ? 1U : 0U)) {
         uint32_t now = HAL_GetTick();

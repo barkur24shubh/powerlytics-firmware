@@ -213,3 +213,26 @@ Findings so far:
 Tests already passing on 1.0.7 (pins follow ON/OFF/TOGGLE, duplicate id re-acked not re-run, expired command not run, missing fields reason, two users at once) were not affected.
 
 Still open in section 4: commands during reconnect (parked: clean session; seen again when the soak started while the unit was still rebooting), Modbus poll (no slave on the bench), OTA refusal on hardware (section 22).
+
+## 6. Relays, hardware → software (2026-11-18)
+
+| Test | Result | Notes |
+|---|---|---|
+| [E2E] Local change of relay state reflected within one interval | **pass** | 1.0.8, 5 s interval: change at the pin (SWD) → platform showed it 12 s later (next snapshot + publish). 1.0.9, **1 h** interval: unit reported at once (`output changed without a command … reporting now` within 1 s) → platform 5.4 s after the change. Telemetry reports the **output pin**, not the contact: a manual override at the contact or a welded relay is invisible until the feedback inputs work (R5, parked). |
+| [E2E] Relay state not refreshed recently shows "uncertain" | **fail (code review)** | The relay panel marks a state uncertain only after a fixed 10 min without a report: at a 1 h interval a healthy relay shows "Uncertain" ~50 min of every hour; at 5 s a relay unreported for 9 min still looks confident. While the device is OFFLINE the tiles still show a confident ON/OFF (only a banner). |
+| [E2E] Relay history: who, when, ack, physical result | **fail** | No relay history view in the app. The API has who (`requestedById`), when, status, ack time and (since 2026-11-17) late acks, paged; nothing records whether telemetry later confirmed the physical state. |
+
+Findings:
+- **H1** "Uncertain" should follow the unit's own reporting period (e.g. > 3 × min(interval, presence period), at least 1 min) and always apply while the device is offline.
+- **H2** No relay command history in the app; add one (per relay: time, who, action, outcome, ack time, late ack).
+- **H3** No record of physical confirmation: mark a command `confirmedAt` when a later telemetry report shows the requested state (and flag `mismatch` when it does not after the ack).
+- **H4** A local change is only seen at the next telemetry (up to one interval; hourly at a 1 h interval). Optional: the unit sends a telemetry snapshot at once when a relay pin changes without a command.
+
+### Section 6 fixes (firmware 1.0.9, backend `feature/admin-boot-info`), 2026-11-18
+
+| Finding | Fix | Retest |
+|---|---|---|
+| H1 uncertain after a fixed 10 min | Uncertain after 3 × telemetry interval (min 1 min), and always while offline ("Uncertain (offline)") | code + type-check; tiles show "reported just now" at 5 s |
+| H2 no relay history | "Relay history" on the Controls tab: when, relay, command, device answer with ack time, late ack, device-reported state, You / Another member (names live in the account app) | seen in the UI ✅ |
+| H3 no physical result | Platform stores `physical {reportedState, at, matches}` from the first report sampled after the ack | unit tests ✅; live: recorded when the local API processed the report ("reported OFF" in the history) — the production instance, still on old code, usually wins the telemetry race, so live coverage waits for the deploy |
+| H4 local change only at next interval | Unit reports at once when an output differs from its last snapshot and no command came in 3 s (≤ every 2 s) | 1 h interval: platform 5.4 s after a pin change ✅; a single command → report 3 s later ✅ |

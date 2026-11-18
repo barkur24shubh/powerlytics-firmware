@@ -56,6 +56,33 @@ static uint32_t s_link_lost_since;
 static uint8_t  s_link_lost;
 static uint8_t  s_link_loss_safe_applied;
 
+/* A relay output that changed without a cloud command (local logic, manual
+ * debug, safe state) is reported at once instead of at the next interval,
+ * which is up to an hour at long intervals. Changes made by commands are
+ * left to their acks. At most one early report every 2 s. */
+static uint32_t s_last_relay_change_report;
+
+static uint8_t relay_change_needs_report(void)
+{
+    uint8_t reported = 0U;
+    if (!app_powerlytics_engine_reported_relays(&reported)) return 0U;
+    uint8_t now_mask = 0U;
+    char key[8];
+    for (uint8_t i = 0U; i < app_relay_count() && i < 8U; i++) {
+        snprintf(key, sizeof(key), "RO_%u", (unsigned)(i + 1U));
+        if (app_relay_get_by_key(key)) now_mask |= (uint8_t)(1U << i);
+    }
+    if (now_mask == reported) return 0U;
+    uint32_t now = HAL_GetTick();
+    uint32_t last_cmd = app_relay_last_command_tick();
+    if (last_cmd && (now - last_cmd) < 3000U) return 0U;
+    if (s_last_relay_change_report && (now - s_last_relay_change_report) < 2000U) return 0U;
+    s_last_relay_change_report = now | 1U;
+    print("[RELAY] output changed without a command (0x%02X -> 0x%02X), reporting now\r\n",
+          (unsigned)reported, (unsigned)now_mask);
+    return 1U;
+}
+
 static uint8_t publish_hello_once(void)
 {
     static uint8_t sent = 0U;
@@ -467,6 +494,11 @@ static void app_gateway_online_idle_for(uint32_t wait_ms)
         if (process_downlink_once("DOWNLINK IDLE"))
         {
             continue;
+        }
+
+        if (relay_change_needs_report())
+        {
+            return;
         }
 
         (void)connectivity_flush_pending_acks();

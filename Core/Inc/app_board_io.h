@@ -33,6 +33,8 @@ uint8_t app_relay_set_by_key(const char *port_key, uint8_t on);
 #endif
 uint8_t app_relay_command(const char *port_key, uint8_t on, const char **reason);
 void    app_relay_apply_safe_states(uint16_t on_mask, const char *why);
+uint32_t app_relay_last_command_tick(void);   /* 0 = never; HAL tick of the last cloud relay command */
+uint8_t  app_relay_count(void);
 uint8_t app_relay_get_by_key(const char *port_key);
 void app_relay_get_all(uint8_t out5[5]);
 uint8_t app_relay_feedback_get_by_key(const char *port_key);

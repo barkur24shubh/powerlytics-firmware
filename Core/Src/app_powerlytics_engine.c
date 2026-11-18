@@ -103,6 +103,9 @@ typedef struct {
 } seq_record_t;
 
 static modbus_cfg_t s_cfg;
+/* Relay states as last put into a telemetry snapshot (bit i = RO_(i+1) ON). */
+static uint8_t s_reported_relays;
+static uint8_t s_reported_relays_valid;
 static uint8_t s_cfg_valid;
 static mbm_t *s_mbm;
 static W25Q_Handle *s_flash;
@@ -915,6 +918,12 @@ void app_powerlytics_engine_init(mbm_t *mbm)
   s_next_sample_ms = HAL_GetTick();
 }
 
+uint8_t app_powerlytics_engine_reported_relays(uint8_t *mask)
+{
+  if (mask) *mask = s_reported_relays;
+  return s_reported_relays_valid;
+}
+
 uint16_t app_powerlytics_engine_relay_flags(void)
 {
   return s_cfg_valid ? s_cfg.reserved_flags : 0U;
@@ -1162,8 +1171,13 @@ const char *app_powerlytics_engine_build_telemetry(void)
     if (p->kind != POWERLYTICS_POINT_RELAY) continue;
     if (!first) jb_append(s_telemetry_json, ENGINE_JSON_MAX, &idx, ",");
     first = 0U;
+    uint8_t relay_on = app_relay_get_by_key(p->key) ? 1U : 0U;
+    if (i < 8U) {
+      s_reported_relays = (uint8_t)((s_reported_relays & ~(1U << i)) | (relay_on << i));
+      s_reported_relays_valid = 1U;
+    }
     jb_append(s_telemetry_json, ENGINE_JSON_MAX, &idx, "\"%s\":{\"last\":%u}",
-              p->key, app_relay_get_by_key(p->key) ? 1U : 0U);
+              p->key, relay_on);
   }
 
   if (s_cfg.slave_count > 0U) {
