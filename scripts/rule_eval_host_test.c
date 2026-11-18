@@ -241,7 +241,7 @@ static void s10_validation(void)
   printf("S10 rule validation\n");
   const char *why;
   powerlytics_rule_cfg_t r;
-  r = rule(POWERLYTICS_RULE_OUT_OF_RANGE, 2, 8, 3, 0, 0);
+  r = rule(POWERLYTICS_RULE_OUT_OF_RANGE, 2, 8, 3.5f, 0, 0);
   CHECK(!app_rule_cfg_valid(&r, &why) && strcmp(why, "invalid_rule_hysteresis") == 0, "band hysteresis too wide accepted");
   r = rule(POWERLYTICS_RULE_OUT_OF_RANGE, 8, 2, 0, 0, 0);
   CHECK(!app_rule_cfg_valid(&r, &why) && strcmp(why, "invalid_rule_band") == 0, "low>high accepted");
@@ -257,6 +257,10 @@ static void s10_validation(void)
   CHECK(app_rule_cfg_valid(&r, &why), "edge rule rejected");
   r = rule(POWERLYTICS_RULE_OUT_OF_RANGE, 2, 8, 2.9f, 0, 0);
   CHECK(app_rule_cfg_valid(&r, &why), "narrow but valid band rejected");
+  r = rule(POWERLYTICS_RULE_OUT_OF_RANGE, 300, 900, 300, 0, 0);
+  CHECK(app_rule_cfg_valid(&r, &why), "exactly half the band (platform maximum) rejected");
+  r = rule(POWERLYTICS_RULE_OUT_OF_RANGE, 300, 900, 300.5f, 0, 0);
+  CHECK(!app_rule_cfg_valid(&r, &why), "over half the band accepted");
 }
 
 /* Gateway resets while the alarm is active and the level is still high:

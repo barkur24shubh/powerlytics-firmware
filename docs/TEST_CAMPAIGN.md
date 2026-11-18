@@ -297,7 +297,11 @@ Rule state machine moved to `Core/Src/app_rule_eval.c`; host tests `scripts/rule
 | S9 | Tick wrap during on-delay | ✅ | ✅ |
 | S10 | Impossible rules (band low ≥ high, hysteresis ≥ half band, negative) | ❌ accepted; alarm could never clear | ✅ refused: `invalid_rule_band` / `invalid_rule_hysteresis` / `invalid_rule_number` |
 | S11 | Reset with an active alarm | ❌ forgotten: no recovery ever sent | ✅ bench: "1 active alarm(s) restored", 0 events after reset; recovery held 60 s |
-| S14 | Config redeploy | ❌ every deploy reset all alarms | ✅ same rule keeps its state; removed/changed rule sends `AI_RECOVERY` `reason:"rule_changed"` (bench check pending: needs a cloud deploy) |
-| — | Edge rule `debounceMs`, `contextKeys` | ❌ ignored | ✅ implemented (bench check pending: DI stimulus / cloud deploy) |
+| S14 | Config redeploy | ❌ every deploy reset all alarms | ✅ bench: redeploy with context keys added → alarm kept, 0 events in 74 s; limit 850 → 900 → `AI_RECOVERY` (threshold 850) then the new rule raised; reflash with the alarm active → restored |
+| — | `contextKeys` | ❌ ignored | ✅ bench: events carry `context:{"AI_2":677,"DI_1":0}` |
+| — | Edge rule `debounceMs` | ❌ ignored | ✅ implemented, not bench-checked (needs DI stimulus) |
+| S10b | Band hysteresis exactly half the band (platform maximum) | — | ❌ first 1.0.12 build refused it while the platform allowed it; fixed: allowed (bench: out_of_range 300–900 / 300 applied) |
+
+Platform findings during the bench run (backend branch `feature/rule-alarm-fixes`): event `reason`/`suppressed` were stripped by the stored-event schema; a deploy sent while the unit was restarting stayed SENT forever (now resent on the next hello, at most 3 times, and older unacknowledged ones become SUPERSEDED once a newer one is applied). Platform refuses impossible rules itself (400 with a clear message), so the device check is a backstop.
 
 Open (proposals, not built): `latchMode` on the device; sensor-fault detection for 4–20 mA (NAMUR NE43 < 3.6 mA / > 21 mA); more than 2 rules per point (L/LL/H/HH); alarm state across power loss needs VBAT.

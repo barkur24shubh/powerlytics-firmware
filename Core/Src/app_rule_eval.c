@@ -32,9 +32,10 @@ uint8_t app_rule_cfg_valid(const powerlytics_rule_cfg_t *cfg, const char **reaso
     if (!(cfg->low < cfg->high)) {
       why = "invalid_rule_band";
     } else if (cfg->type == POWERLYTICS_RULE_OUT_OF_RANGE &&
-               (cfg->hysteresis * 2.0f) >= (cfg->high - cfg->low)) {
+               (cfg->hysteresis * 2.0f) > (cfg->high - cfg->low)) {
       /* The recovery band [low+h, high-h] would be empty: the alarm could
-       * never clear. */
+       * never clear. Exactly half the band is allowed (the platform allows
+       * it too, "at most (high-low)/2"). */
       why = "invalid_rule_hysteresis";
     }
   }
