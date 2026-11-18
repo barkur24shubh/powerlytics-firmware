@@ -115,6 +115,11 @@ static W25Q_Handle *s_flash;
 static uint32_t s_next_sample_ms;
 static uint32_t s_next_telemetry_seq = 1U;
 static uint32_t s_next_event_seq = 1U;
+/* Event seq last written to flash, and events dropped because the queue was
+ * full (2026-11-18). */
+static uint32_t s_saved_event_seq;
+static uint32_t s_saved_seq_tick;
+static volatile uint32_t s_events_dropped;
 static uint8_t s_events_this_interval;
 
 static digital_runtime_t s_di[8];
@@ -191,6 +196,8 @@ static void seq_store(void)
   rec.telemetry_seq = s_next_telemetry_seq;
   rec.event_seq = s_next_event_seq;
   rec.crc32 = crc32_sw(&rec, sizeof(rec));
+  s_saved_event_seq = rec.event_seq;
+  s_saved_seq_tick = HAL_GetTick();
 
   seq_record_t probe;
   uint16_t slot = 0U;
@@ -240,7 +247,23 @@ static void seq_load(void)
     }
   }
 
-  if (!found) seq_store();
+  /* Event seq is saved within ~1 s of each event (app_powerlytics_engine_seq_service),
+   * so skip ahead at boot: an event raised after the last save would otherwise
+   * reuse an eventId, and the platform drops a repeated eventId as a duplicate. */
+  if (found) s_next_event_seq += 64U;
+  seq_store();
+}
+
+void app_powerlytics_engine_seq_service(void)
+{
+  if (s_next_event_seq != s_saved_event_seq && (HAL_GetTick() - s_saved_seq_tick) >= 1000U) {
+    seq_store();
+  }
+}
+
+uint32_t app_powerlytics_engine_events_dropped(void)
+{
+  return s_events_dropped;
 }
 
 static uint32_t critical_enter(void)
@@ -472,6 +495,7 @@ static uint8_t event_push_json(const char *source,
 
   uint8_t next = (uint8_t)((s_event_w + 1U) % ENGINE_EVENT_QUEUE);
   if (next == s_event_r) {
+    s_events_dropped++;
     critical_exit(primask);
     return 0U;
   }
@@ -559,40 +583,40 @@ static void evaluate_threshold_rule(const char *source,
     return;
   }
 
-  switch (rt->state) {
-    case RULE_STATE_NORMAL:
-      if (crossed) {
-        rt->state = RULE_STATE_HIGH_PENDING;
-        rt->entered_ms = now;
-      }
-      break;
-
-    case RULE_STATE_HIGH_PENDING:
-      if (!crossed) {
-        rt->state = RULE_STATE_NORMAL;
-      } else if ((now - rt->entered_ms) >= cfg->duration_ms) {
-        rt->state = RULE_STATE_HIGH_ACTIVE;
-        event_push_json(source, event_type, cfg->severity, slave_id, read_id,
-                        value, rt->previous_value, threshold);
-      }
-      break;
-
-    case RULE_STATE_HIGH_ACTIVE:
-      if (recovered) {
-        rt->state = RULE_STATE_RECOVERY_PENDING;
-        rt->entered_ms = now;
-      }
-      break;
-
-    case RULE_STATE_RECOVERY_PENDING:
-      if (crossed) {
-        rt->state = RULE_STATE_HIGH_ACTIVE;
-      } else if ((now - rt->entered_ms) >= cfg->recovery_duration_ms) {
-        rt->state = RULE_STATE_NORMAL;
-        event_push_json(source, "AI_RECOVERY", cfg->severity, slave_id, read_id,
-                        value, rt->previous_value, threshold);
-      }
-      break;
+  /* A pending state is re-checked on the same sample, so with no duration
+   * the event fires on the sample that crossed (and carries its value).
+   * Recovery must stay inside the hysteresis band for the whole recovery
+   * time: a value back between the band and the threshold cancels it.
+   * (Before 2026-11-18 a 0 ms rule fired one sample late with the next
+   * sample's value, and recovery completed at 825 for high 850 / hysteresis
+   * 100 because only a new crossing cancelled it.) */
+  if (rt->state == RULE_STATE_NORMAL && crossed) {
+    rt->state = RULE_STATE_HIGH_PENDING;
+    rt->entered_ms = now;
+  }
+  if (rt->state == RULE_STATE_HIGH_PENDING) {
+    if (!crossed) {
+      rt->state = RULE_STATE_NORMAL;
+    } else if ((now - rt->entered_ms) >= cfg->duration_ms) {
+      rt->state = RULE_STATE_HIGH_ACTIVE;
+      event_push_json(source, event_type, cfg->severity, slave_id, read_id,
+                      value, rt->previous_value, threshold);
+      rt->previous_value = value;
+      return;
+    }
+  }
+  if (rt->state == RULE_STATE_HIGH_ACTIVE && recovered) {
+    rt->state = RULE_STATE_RECOVERY_PENDING;
+    rt->entered_ms = now;
+  }
+  if (rt->state == RULE_STATE_RECOVERY_PENDING) {
+    if (!recovered) {
+      rt->state = RULE_STATE_HIGH_ACTIVE;
+    } else if ((now - rt->entered_ms) >= cfg->recovery_duration_ms) {
+      rt->state = RULE_STATE_NORMAL;
+      event_push_json(source, "AI_RECOVERY", cfg->severity, slave_id, read_id,
+                      value, rt->previous_value, threshold);
+    }
   }
 
   rt->previous_value = value;

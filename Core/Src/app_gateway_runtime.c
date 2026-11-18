@@ -62,6 +62,24 @@ static uint8_t  s_link_loss_safe_applied;
  * left to their acks. At most one early report every 2 s. */
 static uint32_t s_last_relay_change_report;
 
+/* Events dropped because the queue was full are logged, not silent
+ * (at most one log per minute, with the running total). */
+static void event_service(void)
+{
+    static uint32_t reported_drops;
+    static uint32_t last_log_tick;
+    app_powerlytics_engine_seq_service();
+    uint32_t drops = app_powerlytics_engine_events_dropped();
+    if (drops != reported_drops && (last_log_tick == 0U || (HAL_GetTick() - last_log_tick) >= 60000U)) {
+        app_log_push(APP_LOG_WARN, "EVENT", "EVENT_QUEUE_FULL", "events dropped: event queue full",
+                     (int32_t)(drops - reported_drops), (int32_t)drops);
+        print("[EVENT][WARN] %lu events dropped (queue full), total %lu\r\n",
+              (unsigned long)(drops - reported_drops), (unsigned long)drops);
+        reported_drops = drops;
+        last_log_tick = HAL_GetTick() | 1U;
+    }
+}
+
 static uint8_t relay_change_needs_report(void)
 {
     uint8_t reported = 0U;
@@ -496,6 +514,8 @@ static void app_gateway_online_idle_for(uint32_t wait_ms)
             continue;
         }
 
+        event_service();
+
         if (relay_change_needs_report())
         {
             return;
@@ -648,6 +668,7 @@ void app_gateway_runtime_task(void *argument)
         (void)publish_hello_once();
         (void)connectivity_flush_pending_acks();
         service_clock_sync_once();
+        event_service();
 
         /*
          * Priority 1: downlink/config/command always wins.

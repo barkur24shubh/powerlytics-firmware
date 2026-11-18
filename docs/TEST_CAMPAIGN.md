@@ -263,3 +263,17 @@ Also seen: the unit silently drops an invalid Modbus read or slave and still rep
 | Stream isolation | **pass** | Other workspace → 404, device not in workspace → 404, no ticket → 401. Tickets are 30 s, reusable within that (by design, so EventSource can reconnect). |
 | 50 tabs | **partly** | Server caps 10 streams per user (tests). Locally the browser's 6-connections-per-host HTTP/1.1 limit stalls API calls beyond ~5 streaming tabs; production over HTTP/2 is not affected. |
 | Live chart = latest values = DB | not run | Same source (stream patches the latest-values cache). |
+
+## 13. Events (2026-11-18, firmware 1.0.11) — non-hardware parts
+
+Event source without hardware: a `threshold_high` rule on AI_1 (high 850, hysteresis 100) — the input floats between ~580 and ~960.
+
+| Test | Result | Notes |
+|---|---|---|
+| Event published and stored | **pass** | `AI_1-500` AI_THRESHOLD_HIGH (960) and `AI_1-501` AI_RECOVERY stored with `telemetrySeq` for correlation. |
+| Threshold / recovery semantics | **fixed** | Recovery completed at 825 (should need ≤ 750): during the recovery wait only a new crossing cancelled it. Also a 0 ms rule fired one sample late with the next sample's value. Now: recoveries at 657, 698; triggers at 861–929. |
+| Event ids after power loss | **fixed** | The event seq was saved only with telemetry, so an event raised after the last save reused its eventId after a power cut and the platform dropped the new event as a duplicate (up to an interval of events, an hour at 1 h). Now saved within ~1 s of an event and skipped ahead by 64 at boot (seen: 501 → 574). |
+| Burst beyond the queue: drops counted | **fixed** | The 8-slot queue dropped silently; now counted and logged (`EVENT_QUEUE_FULL`, at most once a minute): 228 dropped while offline at boot. |
+| Events during an outage buffered and replayed | **partly** | Only 8 are kept (RAM); the rest are dropped (now reported). Same store-and-forward question as telemetry (T6). |
+| Same eventId from two devices / redelivery | pass (tests) | Unique index on (deviceId, eventId). |
+| Physical edge timing, debounce, chatter at threshold | not run | Hardware (section 7/13 HIL). |
