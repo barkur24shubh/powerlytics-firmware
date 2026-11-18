@@ -742,6 +742,50 @@ static int8_t relay_index_from_key(const char *port_key)
     return -1;
 }
 
+/* Relay command from the cloud. Refuses an unknown port and a change of
+ * state sooner than APP_RELAY_MIN_SWITCH_MS after the previous change of
+ * that relay (chatter protection: a burst test switched a relay 20 times in
+ * 2 s). A command that keeps the current state is always accepted.
+ * *reason is set on refusal. */
+static uint32_t s_relay_last_change_tick[5];
+static uint8_t  s_relay_changed_once[5];
+
+uint8_t app_relay_command(const char *port_key, uint8_t on, const char **reason)
+{
+    int8_t idx = relay_index_from_key(port_key);
+    if (idx < 0 || idx >= RELAY_COUNT) {
+        if (reason) *reason = "unknown_port";
+        return 0U;
+    }
+    uint8_t current = app_relay_get_by_key(port_key);
+    if ((current ? 1U : 0U) != (on ? 1U : 0U)) {
+        uint32_t now = HAL_GetTick();
+        if (s_relay_changed_once[idx] && (now - s_relay_last_change_tick[idx]) < APP_RELAY_MIN_SWITCH_MS) {
+            print("[RELAY][WARN] %s change refused: %lu ms since the last one (min %u)\r\n",
+                  port_key, (unsigned long)(now - s_relay_last_change_tick[idx]), (unsigned)APP_RELAY_MIN_SWITCH_MS);
+            if (reason) *reason = "min_switch_interval";
+            return 0U;
+        }
+        s_relay_last_change_tick[idx] = now;
+        s_relay_changed_once[idx] = 1U;
+    }
+    if (!app_relay_set_by_key(port_key, on)) {
+        if (reason) *reason = "relay_action_failed";
+        return 0U;
+    }
+    return 1U;
+}
+
+/* Drive every relay to its configured safe state (bit i set = relay i ON). */
+void app_relay_apply_safe_states(uint16_t on_mask, const char *why)
+{
+    for (uint8_t i = 0; i < RELAY_COUNT && i < 8U; i++) {
+        uint8_t on = (uint8_t)((on_mask >> i) & 1U);
+        relay_write(i, on);
+        print("[RELAY] RO_%u safe state %s (%s)\r\n", (unsigned)(i + 1U), on ? "ON" : "OFF", why ? why : "");
+    }
+}
+
 uint8_t app_relay_set_by_key(const char *port_key, uint8_t on)
 {
     int8_t idx = relay_index_from_key(port_key);

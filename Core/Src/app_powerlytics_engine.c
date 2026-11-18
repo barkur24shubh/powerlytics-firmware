@@ -915,6 +915,11 @@ void app_powerlytics_engine_init(mbm_t *mbm)
   s_next_sample_ms = HAL_GetTick();
 }
 
+uint16_t app_powerlytics_engine_relay_flags(void)
+{
+  return s_cfg_valid ? s_cfg.reserved_flags : 0U;
+}
+
 void app_powerlytics_engine_apply_config(const modbus_cfg_t *cfg)
 {
   if (!cfg) return;

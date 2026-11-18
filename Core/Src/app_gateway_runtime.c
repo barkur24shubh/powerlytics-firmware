@@ -9,6 +9,8 @@
 #include "connectivity.h"
 #include "app_modbus_payload.h"
 #include "app_log.h"
+#include "app_board_io.h"
+#include "app_powerlytics_engine.h"
 #include "app_flash_log.h"
 #include "app_health.h"
 #include "app_debug_led.h"
@@ -50,6 +52,10 @@ extern uint32_t app_boot_count;
 extern char app_boot_id[48];
 extern char app_reset_reason[40];
 
+static uint32_t s_link_lost_since;
+static uint8_t  s_link_lost;
+static uint8_t  s_link_loss_safe_applied;
+
 static uint8_t publish_hello_once(void)
 {
     static uint8_t sent = 0U;
@@ -80,8 +86,9 @@ static uint8_t publish_hello_once(void)
 #ifdef BOARD_MODBUS_UART_INSTANCE
     idx += snprintf(payload + idx, sizeof(payload) - (size_t)idx, ",\"MI\":[\"MI_1\"]");
 #endif
-    idx += snprintf(payload + idx, sizeof(payload) - (size_t)idx, "},\"bootId\":\"%s\",\"bootCount\":%lu,\"resetReason\":\"%s\",\"uptimeMs\":%lu}",
-        app_boot_id, (unsigned long)app_boot_count, app_reset_reason, (unsigned long)HAL_GetTick());
+    idx += snprintf(payload + idx, sizeof(payload) - (size_t)idx, "},\"bootId\":\"%s\",\"bootCount\":%lu,\"resetReason\":\"%s\",\"uptimeMs\":%lu,\"presenceMs\":%lu}",
+        app_boot_id, (unsigned long)app_boot_count, app_reset_reason, (unsigned long)HAL_GetTick(),
+        (unsigned long)ONLINE_IDLE_MQTT_KEEPALIVE_MS);
 #undef APPEND_CHANNELS
     if (idx < 0 || idx >= (int)sizeof(payload)) return 0U;
     if (connectivity_publish_priority(topic_d2c_message, payload)) {
@@ -552,6 +559,22 @@ void app_gateway_runtime_task(void *argument)
         {
             app_debug_led_event(DEBUG_LED_EVENT_ERROR_ON);
 
+            /* Relays go to their safe state once the connection has been
+             * lost for the configured time (0 = hold the current state). */
+            {
+                uint16_t flags = app_powerlytics_engine_relay_flags();
+                uint32_t minutes = (flags >> 8) & 0xFFU;
+                if (!s_link_lost) { s_link_lost_since = HAL_GetTick(); s_link_lost = 1U; }
+                if (minutes && !s_link_loss_safe_applied &&
+                    (HAL_GetTick() - s_link_lost_since) >= minutes * 60000UL) {
+                    print("[RELAY] connection lost for %lu ms (limit %lu min), applying safe states\r\n",
+                          (unsigned long)(HAL_GetTick() - s_link_lost_since), (unsigned long)minutes);
+                    app_relay_apply_safe_states(flags & 0xFFU, "connection lost");
+                    app_log_push(APP_LOG_WARN, "RELAY", "LINK_LOSS_SAFE_STATE", "relays set to safe state after connection loss", (int32_t)minutes, 0);
+                    s_link_loss_safe_applied = 1U;
+                }
+            }
+
             /*
              * Important:
              * Persist deferred logs even when offline.
@@ -582,6 +605,8 @@ void app_gateway_runtime_task(void *argument)
 
         app_debug_led_event(DEBUG_LED_EVENT_ERROR_OFF);
         last_offline_diag_tick = 0U;
+        s_link_lost = 0U;
+        s_link_loss_safe_applied = 0U;
 
         /*
          * If the bootloader has just installed an OTA image, report that only

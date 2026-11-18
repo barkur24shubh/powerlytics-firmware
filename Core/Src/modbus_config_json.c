@@ -590,6 +590,8 @@ static const char *check_limits(cJSON *cfg_json)
     }
   }
   if (enabled > POWERLYTICS_MAX_POINTS) return "too_many_points";
+  cJSON *ll = cJSON_GetObjectItemCaseSensitive(cfg_json, "relayLinkLossSafeMs");
+  if (ll && (!cJSON_IsNumber(ll) || ll->valuedouble < 0.0 || ll->valuedouble > 255.0 * 60000.0)) return "invalid_link_loss_timeout";
   if (slaves > MODBUS_MAX_SLAVES) return "too_many_slaves";
   return NULL;
 }
@@ -671,6 +673,27 @@ static bool modbus_cfg_parse_root(cJSON *root, modbus_cfg_t *cfg)
 
   cJSON *points = cJSON_GetObjectItemCaseSensitive(cfg_json, "points");
   parse_points_array(points, cfg);
+
+  /* Relay safe states: applied at boot and, when relayLinkLossSafeMs is set,
+   * after the connection has been lost that long. Default OFF / hold. */
+  uint16_t flags = 0U;
+  cJSON *p = NULL;
+  cJSON_ArrayForEach(p, points) {
+    cJSON *kind = cJSON_GetObjectItemCaseSensitive(p, "kind");
+    cJSON *key = cJSON_GetObjectItemCaseSensitive(p, "key");
+    cJSON *safe = cJSON_GetObjectItemCaseSensitive(p, "safeState");
+    if (!cJSON_IsString(kind) || !str_eq_ci(kind->valuestring, "relay") || !cJSON_IsString(key) || !cJSON_IsString(safe)) continue;
+    if (strncmp(key->valuestring, "RO_", 3) != 0) continue;
+    int n = atoi(key->valuestring + 3);
+    if (n >= 1 && n <= 8 && str_eq_ci(safe->valuestring, "ON")) flags |= (uint16_t)(1U << (n - 1));
+  }
+  cJSON *ll = cJSON_GetObjectItemCaseSensitive(cfg_json, "relayLinkLossSafeMs");
+  if (cJSON_IsNumber(ll) && ll->valuedouble > 0.0) {
+    uint32_t minutes = (uint32_t)((ll->valuedouble + 59999.0) / 60000.0);
+    if (minutes > 255U) minutes = 255U;
+    flags |= (uint16_t)(minutes << 8);
+  }
+  cfg->reserved_flags = flags;
 
   return true;
 }

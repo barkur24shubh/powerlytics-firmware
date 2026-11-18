@@ -28,6 +28,11 @@ void app_relay_test(uint32_t step_ms);
 void app_relay_test_init(void);
 void app_relay_test_sequence(void);
 uint8_t app_relay_set_by_key(const char *port_key, uint8_t on);
+#ifndef APP_RELAY_MIN_SWITCH_MS
+#define APP_RELAY_MIN_SWITCH_MS 500U
+#endif
+uint8_t app_relay_command(const char *port_key, uint8_t on, const char **reason);
+void    app_relay_apply_safe_states(uint16_t on_mask, const char *why);
 uint8_t app_relay_get_by_key(const char *port_key);
 void app_relay_get_all(uint8_t out5[5]);
 uint8_t app_relay_feedback_get_by_key(const char *port_key);

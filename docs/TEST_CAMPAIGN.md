@@ -178,4 +178,38 @@ Method: commands sent through the real API from the signed-in local UI (alternat
 
 **Flashing note:** SWD writes started failing ("failed to erase memory", later a verify mismatch). Cause: the watchdog firing during the longer multi-sector erase. Fix: write `0x1800` to `DBGMCU_APB1_FZ` (`0xE0042008`) in the same CLI call before `-w`; one verify mismatch also needed `freq=950`.
 
+## 5. Relays, software → hardware (2026-11-17/18)
+
+Pins read over SWD (GPIOB ODR: RO_1 = PB15, RO_2 = PB14); commands sent direct over MQTT unless noted.
+
+| Test | Result |
+|---|---|
+| ON/OFF/TOGGLE each relay, pin matches | **pass** (pins follow every acked command; contact/feedback not checked: feedback hardware parked) |
+| Same actuationId twice | **pass**: redelivered ON after an OFF was re-acked, not re-run; duplicate TOGGLE flipped once |
+| Expired command | **pass**: EXPIRED `command_expired`, pin unchanged |
+| Unknown port / bad action | **fail**: both FAILED `relay_action_failed` (not readable); missing fields → `missing_port_or_action` ✅ |
+| Two users at once (API, same relay, opposite actions) | **pass**: one SENT, the other 429; platform state OFF = pin OFF |
+| Not run yet | offline refusal on hardware, boot/watchdog/connection-loss state, chatter |
+
+Findings so far:
+- **R1** unknown port and unsupported action share the generic reason `relay_action_failed`; should be `unknown_port` / `unsupported_action`.
+- **R2** duplicate protection remembers only the last 8 ids and forgets them at reboot.
+- **R3** `safeState` is stored on the platform but never sent to the unit; relays always start OFF and hold their state on connection loss.
+- **R4** no chatter protection on the unit: 20 switches in 2 s all executed (direct MQTT); only the platform's 1 command/port/s limit protects the relay.
+- **R5** ACKED means "pin driven", not "contact closed" (feedback hardware parked).
+- **R6** a unit that has just died or is rebooting stays ONLINE for 5–10 min (offline sweep every 5 min, 5 min floor), so commands sent then are accepted and lost (seen at 21:26 and during the soak).
+
+### Section 5 fixes (firmware 1.0.8, backend `feature/admin-boot-info`), retested 2026-11-18
+
+| Finding | Fix | Retest |
+|---|---|---|
+| R1 unreadable refusals | `unknown_port`, `unsupported_action` | RO_9 → `unknown_port`, BLINK → `unsupported_action` ✅ |
+| R2 8 remembered ids | 32 (commands also expire after 60 s) | — |
+| R3 safe state never sent | Config carries `safeState` (when ON) and `relayLinkLossSafeMs`; unit applies safe states at boot and after that long offline; stored in spare config bits (layout unchanged); UI "Safe state" + "If the connection is lost" | RO_2 safe ON + 1 min: reset → `RO_2 safe state ON (boot)`, pin high ✅. Connection loss: a wrap bug (`tick \| 1` start time) made it fire at boot — fixed and re-verified; **physical antenna-off test still to do** |
+| R4 no chatter guard | 500 ms minimum between changes of one relay (`min_switch_interval`); same-state commands accepted | ON then OFF 200 ms later → refused; burst 20 in 2 s → 12 accepted, 8 refused ✅ |
+| R5 contact not checked | parked (feedback hardware) | — |
+| R6 dead unit looks online | Idle keepalive 30 s (was 240 s), `hello.presenceMs`; platform refuses when silent > 3 × min(interval, presenceMs), ≥ 20 s | command 27 s into a reboot → 409 "not heard from recently" ✅; hello carries `presenceMs:30000` ✅ |
+
+Tests already passing on 1.0.7 (pins follow ON/OFF/TOGGLE, duplicate id re-acked not re-run, expired command not run, missing fields reason, two users at once) were not affected.
+
 Still open in section 4: commands during reconnect (parked: clean session; seen again when the soak started while the unit was still rebooting), Modbus poll (no slave on the bench), OTA refusal on hardware (section 22).

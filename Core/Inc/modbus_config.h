@@ -350,7 +350,7 @@ typedef struct {
   /* Modbus slaves */
   uint8_t        slave_count;
   uint8_t        debug_flags;
-  uint16_t       reserved_flags;
+  uint16_t       reserved_flags;   /* bits 0-7: relay i safe state ON; bits 8-15: link-loss minutes before safe state (0 = hold) */
   mb_slave_cfg_t slaves[MODBUS_MAX_SLAVES];
 
 } modbus_cfg_t;
@@ -388,6 +388,11 @@ void modbus_cfg_defaults(modbus_cfg_t *cfg);
 
 // Shared large config workspace used for boot/downlink parse-load-save flows.
 modbus_cfg_t *modbus_cfg_workspace(void);
+
+/* Relay safe states (2026-11-18), kept in reserved_flags so the stored
+ * config layout does not change. */
+#define MODBUS_CFG_RELAY_SAFE_ON_MASK(cfg)   ((uint16_t)((cfg)->reserved_flags & 0x00FFU))
+#define MODBUS_CFG_LINK_LOSS_SAFE_MIN(cfg)   ((uint16_t)(((cfg)->reserved_flags >> 8) & 0x00FFU))
 
 /* External flash used for the A/B config copies (call before load/save). */
 void modbus_cfg_set_flash(void *flash);

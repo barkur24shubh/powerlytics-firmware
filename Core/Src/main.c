@@ -726,6 +726,8 @@ int main(void)
   print("Load from FLASH: %s\r\n", cfg_ok ? "VALID" : "DEFAULTS");
   app_print_loaded_config(cfg_from_flash);
   app_modbus_payload_set_cfg(cfg_from_flash);
+  /* Relays start in their configured safe state (all OFF unless set). */
+  app_relay_apply_safe_states(cfg_ok ? MODBUS_CFG_RELAY_SAFE_ON_MASK(cfg_from_flash) : 0U, "boot");
   /* USB CDC diagnostics are a local firmware setting, not cloud configuration. */
   debug_uart_set_enabled(1U);
   debug_uart_set_at_enabled(1U);

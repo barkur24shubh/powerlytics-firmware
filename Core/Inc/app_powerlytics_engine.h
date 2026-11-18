@@ -15,6 +15,8 @@ extern "C" {
 void app_powerlytics_engine_init(mbm_t *mbm);
 void app_powerlytics_engine_set_flash(W25Q_Handle *flash);
 void app_powerlytics_engine_apply_config(const modbus_cfg_t *cfg);
+/* reserved_flags of the running config: relay safe states and link-loss minutes. */
+uint16_t app_powerlytics_engine_relay_flags(void);
 void app_powerlytics_engine_sample_due(void);
 void app_powerlytics_engine_flush_events(void);
 void app_powerlytics_engine_di_edge_isr(uint16_t gpio_pin);

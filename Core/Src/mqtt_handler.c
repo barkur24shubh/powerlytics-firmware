@@ -1700,7 +1700,7 @@ char* MQTT_Subscriber_Run(void)
 #define ACT_ACK_OUTBOX_SLOTS     24U  /* ~0.85 acks/s is the modem limit; absorb bursts while telemetry publishes */
 #define ACT_ACK_MAX_ATTEMPTS     30U
 #define ACT_ACK_PAYLOAD_MAX      192U
-#define ACT_RECENT_IDS           8U
+#define ACT_RECENT_IDS           32U  /* commands also expire after 60 s */
 #define ACT_ID_MAX               40U
 
 typedef struct {
@@ -1892,23 +1892,25 @@ static uint8_t handle_actuation_cjson(cJSON *root)
     }
 
     uint8_t ok = 0U;
+    const char *fail_reason = "relay_action_failed";
 
     if (strcmp(action_str, "TURN_ON") == 0)
     {
-        ok = app_relay_set_by_key(port_str, 1U);
+        ok = app_relay_command(port_str, 1U, &fail_reason);
     }
     else if (strcmp(action_str, "TURN_OFF") == 0)
     {
-        ok = app_relay_set_by_key(port_str, 0U);
+        ok = app_relay_command(port_str, 0U, &fail_reason);
     }
     else if (strcmp(action_str, "TOGGLE") == 0)
     {
         uint8_t current = app_relay_get_by_key(port_str);
-        ok = app_relay_set_by_key(port_str, current ? 0U : 1U);
+        ok = app_relay_command(port_str, current ? 0U : 1U, &fail_reason);
     }
     else
     {
         print("[ACT][ERR] unsupported action=%s\r\n", action_str);
+        fail_reason = "unsupported_action";
         ok = 0U;
     }
 
@@ -1919,7 +1921,7 @@ static uint8_t handle_actuation_cjson(cJSON *root)
     }
     else
     {
-        publish_actuation_ack(id_str, "FAILED", "relay_action_failed");
+        publish_actuation_ack(id_str, "FAILED", fail_reason);
     }
 
     return 1U;

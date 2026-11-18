@@ -11,7 +11,10 @@
 #define ONLINE_IDLE_SERVICE_STEP_MS    100U
 #define ONLINE_IDLE_LOG_PERSIST_MS     1000U
 #define ONLINE_IDLE_LOG_UPLOAD_MS      5000U
-#define ONLINE_IDLE_MQTT_KEEPALIVE_MS  240000UL
+/* An idle unit sends a small keepalive this often (only when nothing else
+ * was published): the platform uses it, announced as hello.presenceMs, to
+ * tell a silent unit from a dead one. Was 240 s until 2026-11-18. */
+#define ONLINE_IDLE_MQTT_KEEPALIVE_MS  30000UL
 #define TELEMETRY_FAIL_RETRY_MS        30000UL
 #define MEMORY_MONITOR_INTERVAL_MS     60000UL
 #define MEMORY_LOW_LOG_INTERVAL_MS     600000UL
