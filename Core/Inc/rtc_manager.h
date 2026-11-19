@@ -57,6 +57,7 @@ typedef enum
 int  rtc_clock_configure_with_fallback(void);
 void rtc_init_with_bkp_once(void);
 uint8_t rtc_get_datetime(rtc_datetime_t *dt);
+uint8_t rtc_set_from_utc_epoch(int64_t utc_s);
 uint8_t rtc_set_datetime_ist(uint16_t year,
                              uint8_t month,
                              uint8_t day,

@@ -368,9 +368,11 @@ void rtc_init_with_bkp_once(void)
         return;
     }
 
-    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR1, RTC_BKP_MAGIC);
-
-    print("[RTC] Default time set and backup magic written.\r\n");
+    /* The default date is a placeholder: the clock stays INVALID (no backup
+     * magic) until network time, NTP or a platform command sets it. Before
+     * 2026-11-19 this wrote the magic, so a unit that lost its backup
+     * battery ran on 11 Jul 2026 13:23 while reporting a valid clock. */
+    print("[RTC] Default time set; clock invalid until set from network/NTP/platform.\r\n");
 }
 
 uint32_t rtc_increment_boot_count(void)
@@ -612,7 +614,8 @@ void rtc_sync_to_build_time_if_newer(void)
 
         rtc_format_datetime_ist(current_ts, sizeof(current_ts), &current);
         s_rtc_time_preserved = s_rtc_backup_magic_seen ? 1U : 0U;
-        print("[RTC] valid RTC present; build time sync skipped current=%s\r\n",
+        print("[RTC] %s; build time sync skipped current=%s\r\n",
+              rtc_is_datetime_valid() ? "valid RTC present" : "RTC not set yet (waiting for network/NTP/platform time)",
               current_ts);
         return;
     }
@@ -657,3 +660,26 @@ void rtc_get_datetime_strings(char *ts_buf, int ts_buf_sz)
 
     rtc_format_datetime_ist(ts_buf, ts_buf_sz, &dt);
 }
+
+/* Set the RTC (kept in IST) from a UTC Unix time. Used when no network or
+ * NTP time is available yet: the platform's send time of a command
+ * (issuedAt) is then the best clock there is. 1 on success. */
+uint8_t rtc_set_from_utc_epoch(int64_t utc_s)
+{
+    if (utc_s < 1735689600LL) return 0U; /* before 2025-01-01: not a real time */
+    int64_t ist_s = utc_s + (5 * 3600 + 30 * 60);
+    int64_t z = ist_s / 86400 + 719468;
+    int64_t secs = ist_s % 86400;
+    int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    int64_t doe = z - era * 146097;
+    int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    int64_t y = yoe + era * 400;
+    int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    int64_t mp = (5 * doy + 2) / 153;
+    int64_t d = doy - (153 * mp + 2) / 5 + 1;
+    int64_t m = mp + (mp < 10 ? 3 : -9);
+    if (m <= 2) y++;
+    return rtc_set_datetime_ist((uint16_t)y, (uint8_t)m, (uint8_t)d,
+                                (uint8_t)(secs / 3600), (uint8_t)((secs % 3600) / 60), (uint8_t)(secs % 60));
+}
+

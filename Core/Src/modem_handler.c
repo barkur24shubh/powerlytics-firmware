@@ -2543,6 +2543,64 @@ done:
     return ok;
 }
 
+#ifndef CLOCK_TEST_IGNORE_NITZ
+#define CLOCK_TEST_IGNORE_NITZ 0
+#endif
+#ifndef CLOCK_TEST_NO_NTP
+#define CLOCK_TEST_NO_NTP 0
+#endif
+#define MH_NTP_RETRY_MS   (10UL * 60UL * 1000UL)
+#define MH_NTP_SERVER     "pool.ntp.org"
+
+/* NTP through the modem, at most every 10 min. The modem clock is set in
+ * IST (+22 quarter hours) so the CCLK read that follows looks like network
+ * time. Called with the AT mutex held. 1 when the modem reported success. */
+static uint8_t modem_ntp_sync_due_locked(void)
+{
+    static uint32_t s_last_try;
+    static uint8_t s_tried;
+    char line[96];
+    uint32_t now = HAL_GetTick();
+
+#if CLOCK_TEST_NO_NTP
+    return 0U;
+#endif
+    if (s_tried && (uint32_t)(now - s_last_try) < MH_NTP_RETRY_MS) return 0U;
+    s_tried = 1U;
+    s_last_try = now;
+
+    print("[CLOCK] no network time from the operator, trying NTP (%s)\r\n", MH_NTP_SERVER);
+    u2_drain_pending();
+    u2_send_cmd("AT+CNTP=\"" MH_NTP_SERVER "\",22");
+    uint32_t start = HAL_GetTick();
+    while ((HAL_GetTick() - start) < 3000U) {
+        int n = u2rx_read_line(&g_u2rx, line, sizeof(line), 500);
+        if (n <= 0) continue;
+        trim_crlf(line);
+        if (!strcmp(line, "OK")) break;
+        if (strstr(line, "ERROR")) return 0U;
+    }
+    u2_drain_pending();
+    u2_send_cmd("AT+CNTP");
+    start = HAL_GetTick();
+    while ((HAL_GetTick() - start) < 20000U) {
+        modem_http_kick_watchdog();
+        int n = u2rx_read_line(&g_u2rx, line, sizeof(line), 500);
+        if (n <= 0) continue;
+        trim_crlf(line);
+        const char *p = strstr(line, "+CNTP:");
+        if (p) {
+            int code = -1;
+            (void)sscanf(p, "+CNTP: %d", &code);
+            print("[CLOCK] NTP %s (+CNTP: %d)\r\n", code == 0 ? "ok" : "failed", code);
+            return (code == 0) ? 1U : 0U;
+        }
+        if (strstr(line, "ERROR")) break;
+    }
+    print("[CLOCK] NTP failed (no answer)\r\n");
+    return 0U;
+}
+
 uint8_t modem_sync_rtc_from_network(void)
 {
     char line[96];
@@ -2564,21 +2622,34 @@ uint8_t modem_sync_rtc_from_network(void)
         if (!strcmp(line, "OK") || strstr(line, "ERROR")) break;
     }
 
-    u2_drain_pending();
-    u2_send_cmd("AT+CCLK?");
-    start = HAL_GetTick();
-    while ((HAL_GetTick() - start) < 2000U) {
-        int n = u2rx_read_line(&g_u2rx, line, sizeof(line), 500);
-        if (n <= 0) continue;
-        trim_crlf(line);
-        const char *p = strstr(line, "+CCLK:");
-        if (p) {
-            int got = sscanf(p, "+CCLK: \"%2u/%2u/%2u,%2u:%2u:%2u%c%2u",
-                             &yy, &mo, &dd, &hh, &mi, &ss, &tzsign, &tzq);
-            parsed = (got == 8 && (tzsign == '+' || tzsign == '-')) ? 1U : 0U;
-            continue;
+    /* Network time (NITZ) first; if the operator sends none, NTP through the
+     * modem (2026-11-19): before, a unit on such a network never got a
+     * clock, stamped everything 1970 and refused every relay command. */
+    for (uint8_t pass = 0U; pass < 2U; pass++) {
+        parsed = 0U;
+        u2_drain_pending();
+        u2_send_cmd("AT+CCLK?");
+        start = HAL_GetTick();
+        while ((HAL_GetTick() - start) < 2000U) {
+            int n = u2rx_read_line(&g_u2rx, line, sizeof(line), 500);
+            if (n <= 0) continue;
+            trim_crlf(line);
+            const char *p = strstr(line, "+CCLK:");
+            if (p) {
+                int got = sscanf(p, "+CCLK: \"%2u/%2u/%2u,%2u:%2u:%2u%c%2u",
+                                 &yy, &mo, &dd, &hh, &mi, &ss, &tzsign, &tzq);
+                parsed = (got == 8 && (tzsign == '+' || tzsign == '-')) ? 1U : 0U;
+                continue;
+            }
+            if (!strcmp(line, "OK") || strstr(line, "ERROR")) break;
         }
-        if (!strcmp(line, "OK") || strstr(line, "ERROR")) break;
+#if CLOCK_TEST_IGNORE_NITZ
+        if (pass == 0U) parsed = 0U;
+#endif
+        uint8_t valid = (parsed && yy >= 25U && mo >= 1U && mo <= 12U && dd >= 1U && dd <= 31U &&
+                         hh <= 23U && mi <= 59U && ss <= 59U && tzq <= 56U) ? 1U : 0U;
+        if (valid || pass == 1U) break;
+        if (!modem_ntp_sync_due_locked()) break;
     }
 
     at_rx_active = 0;

@@ -357,3 +357,11 @@ Owner asked for 500 ms and 1 s; 500 ms dropped (the modem needs ~1.1 s per 1.9 K
 | 18 | Every operator action audited with who/when/what/before/after/result | ❌ relay commands from the panel, port/rule/safe-state changes, member role changes, invites, workspace edits, alert rules, maintenance windows, alert ack/resolve, notification destinations, log-issue resolve, staff role changes and workspace suspension left no entry; device edits had no before/after; refusals not recorded | ✅ all audited; changed fields before/after; relay commands logged once per idempotency key and also when refused (with the reason) |
 | 19 | Not editable; failed write not ignored | ✅ append-only at application level (update/delete/re-save refused); a failed write is retried once, then the whole entry goes to the error log | unchanged (a database role without update/delete rights is still recommended) |
 | 20 | Export and filter per device / user | ❌ action and target type only, no export | ✅ filters device, user, result, date range; CSV export (10 000 rows, formulas defused); panel filters and Export button |
+
+## 19. Time (2026-11-19, firmware 1.0.16)
+
+| # | Test | Result |
+|---|---|---|
+| 21 | RTC drift vs network time | ✅ LSE crystal: 2 s in ~10 h (≈5 ppm); network resync every 6 h keeps it within ~0.1 s |
+| 22 | Time after power loss; invalid-clock flag | ✅ time kept across real power cuts (backup battery). ❌ → ✅ after a backup loss the RTC was set to a fixed 2026-07-11 13:23 **and marked valid**: now the placeholder stays invalid (`valid=false`, health `rtcValid:false`) until a real source sets it (bench: RTC wiped → network time set it 4 s after connecting). ❌ → ✅ a network without operator time (NITZ) left the clock unset forever: everything stamped 1970 and **every relay command refused** (`device_clock_invalid`). Now NTP through the modem (bench: ok in 1.6 s), and as a last resort a relay command sets the clock from its `issuedAt` (bench, NITZ and NTP disabled: set within 0.16 s, command ACKED) |
+| 23 | Same moment on device, DB, API, browser | ✅ device timestamps are IST with offset, stored as UTC, served as UTC, shown in the browser's zone; device→server agreement 0.4–1 s (soaks). Platform now also replaces log times before 2025 (unset clock) with server time |

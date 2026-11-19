@@ -1943,6 +1943,19 @@ static uint8_t actuation_expiry_status(cJSON *root, const char **status, const c
     int64_t expiry_epoch;
     rtc_datetime_t current;
     if (!actuation_parse_expiry(expires->valuestring, &expiry_epoch)) { *status = "FAILED"; *reason = "invalid_expiry"; return 0U; }
+    if (!rtc_is_datetime_valid()) {
+        /* No clock yet (no network time, no NTP): take the platform's send
+         * time as the clock instead of refusing every command (2026-11-19).
+         * Network time or NTP corrects it later. */
+        cJSON *issued = cJSON_GetObjectItemCaseSensitive(root, "issuedAt");
+        int64_t issued_epoch;
+        if (cJSON_IsString(issued) && issued->valuestring &&
+            actuation_parse_expiry(issued->valuestring, &issued_epoch) &&
+            rtc_set_from_utc_epoch(issued_epoch)) {
+            print("[CLOCK] clock was not set: set from the command's issuedAt %s\r\n", issued->valuestring);
+            app_log_critical(APP_LOG_WARN, "CLOCK", "SET_FROM_PLATFORM", "no network/NTP time: clock set from a command's issuedAt", 0, 0, "NONE");
+        }
+    }
     if (!rtc_is_datetime_valid() || !rtc_get_datetime(&current)) { *status = "FAILED"; *reason = "device_clock_invalid"; return 0U; }
     int64_t now = actuation_days_from_civil(current.year, current.month, current.day) * 86400 + current.hour * 3600 + current.minute * 60 + current.second - (5 * 3600 + 30 * 60);
     if (now >= expiry_epoch) { *status = "EXPIRED"; *reason = "command_expired"; return 0U; }
