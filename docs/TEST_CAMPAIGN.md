@@ -400,3 +400,12 @@ Owner asked for 500 ms and 1 s; 500 ms dropped (the modem needs ~1.1 s per 1.9 K
 | — | Cause detected, logged and stored | ✅ `[RST] IWDG reset … reason=WATCHDOG`; boot log uploaded and stored as ERROR `SYSTEM/DEVICE_BOOT reason=WATCHDOG`; `Device.boot.resetReason = WATCHDOG`, boot count advanced |
 | — | Per-task supervision | code review: the IWDG is fed only while every task checks in (runtime 180 s, Modbus 15 s, LED 15 s); a stuck task is named in `[IWDG][PREVIOUS] stale task=…` after the reset. Not forced on the bench. Note: a stuck **runtime** task can leave the unit silent ~3.5 min before recovery (180 s allowance for long modem/OTA work) |
 | — | Alert on a watchdog reset | ❌ → ✅ (platform, not deployed) "Device restarted after a lock-up": warning, critical at 3+ in 24 h, closes after 24 h; raised for the real bench lock-up. Also fixed: open platform alerts now escalate (prolonged offline never became critical) |
+
+## 27. Production programming (2026-11-19, firmware 1.0.18)
+
+| # | Test | Result |
+|---|---|---|
+| — | Option bytes of a shipped unit | ❌ bench board: readout protection Level 0, brown-out reset off (1.8–2.1 V), no write protection. Procedure written: `docs/PRODUCTION_PROGRAMMING.md` (BOR level 3 = 2.7 V, bootloader sectors 0–1 write-protected, RDP Level 1, never Level 2; check via option bytes and the admin Security badges) |
+| — | No secrets in debug output | ❌ → ✅ the broker connect command printed the **shared MQTT username and password** in clear on USB (and the SD terminal log) on every connect; now `<credentials hidden>`, host and port kept (bench: connects as before). Payloads, API keys and configs were already hidden |
+| — | Bootloader safe to write-protect | ✅ code review: nothing in the application or bootloader writes sectors 0–1 |
+| — | Release build | open: release images use the Debug configuration (`-O0 -g3`); an optimised release configuration needs a full regression run |

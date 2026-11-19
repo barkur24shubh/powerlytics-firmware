@@ -146,6 +146,15 @@ static uint8_t modem_text_is_sensitive_or_payload(const char *text)
 
 static void modem_print_text_or_summary(const char *prefix, const char *text)
 {
+    /* The broker connect command carries the shared MQTT username and password
+     * (the same for every unit): print only up to the host and port
+     * (2026-11-19, section 27; was printed in clear on USB and the SD log). */
+    if (text && strstr(text, "CMQTTCONNECT=")) {
+        const char *cut = strstr(text, "\",");
+        int keep = cut ? (int)(cut - text) + 1 : 0;
+        print("%s %.*s,<credentials hidden>\r\n", prefix ? prefix : "", keep, text);
+        return;
+    }
     if (modem_text_is_sensitive_or_payload(text)) {
         print("%s <payload hidden len=%lu>\r\n",
               prefix ? prefix : "",
