@@ -54,7 +54,7 @@ Evidence: USB logs of 2026-11-17 00:21–00:47 (boots 1755–1758), the platform
 | Simulated fault (intent `FAULT\|HARDFAULT` written over SWD, then reset) | `FAULT_HARDFAULT` ✅ | `1769-E07E031B` |
 | Simulated OTA install (intent `OTA_INSTALL` over SWD, then reset) | `OTA_INSTALL` ✅ | `1770-48EFA5D7` |
 | Power cycle (owner, 19:58) | `POWER_ON` ✅ (CSR 0x0E000003: POR+BOR+PIN) | `1771-147C9CC1` |
-| Watchdog | not run (section 20) | |
+| Watchdog | done (section 20): real lock-up reset in 35 s, cause WATCHDOG reported and stored | |
 
 bootCount went 1770 → 1771 across a real power-on reset (PORRSTF set), so the backup domain keeps it: **bootCount survives power loss ✅**.
 Admin device page "Boot & Identity" card checked on the local admin app: firmware 1.0.5 and build, b1-v4-c · B1-V4, last boot, POWER_ON, boot count 1771, boot id, uptime, hello time, "Unit matches its registration".
@@ -391,3 +391,12 @@ Owner asked for 500 ms and 1 s; 500 ms dropped (the modem needs ~1.1 s per 1.9 K
 | 43 | Every reported field shown, right units and decimals | ❌ → ✅ every number was forced to 2 decimals (count 1602 shown "1602.00", 0.004 shown "0.00"); one formatter now (whole numbers plain, 1–4 decimals by size). Units come from the port settings |
 | 44 | Online / stale states consistent | ✅ readings STALE after 3 intervals (at least 2 min); ❌ → ✅ relays were "uncertain" after 60 s, now the same rule |
 | 45 | Empty and error states; phone width | ✅ 375 px: all Values tabs fit, nothing scrolls sideways; a silent device shows "Offline • Updated 63d ago", "No data available", "No events yet", no Controls tab without relays. ❌ → ✅ with the product API down the panel sent people to the login and then to a home page saying **"No devices yet" / 0 devices**; now "can't be reached, your data is safe", retried every 10 s, recovers by itself (panel and SkyMetric); home says "Couldn't load devices right now" |
+
+## 20. Watchdog (2026-11-19, firmware 1.0.17)
+
+| # | Test | Result |
+|---|---|---|
+| — | Real lock-up recovered by the hardware watchdog | ✅ CPU sent into `Default_Handler` (`b .`, interrupts off) over SWD with the debug freeze bit cleared (the firmware freezes the IWDG under a debugger): reset itself after **35 s** (IWDG ≈33 s: LSI/256, reload 4095), back online ~50 s after the hang |
+| — | Cause detected, logged and stored | ✅ `[RST] IWDG reset … reason=WATCHDOG`; boot log uploaded and stored as ERROR `SYSTEM/DEVICE_BOOT reason=WATCHDOG`; `Device.boot.resetReason = WATCHDOG`, boot count advanced |
+| — | Per-task supervision | code review: the IWDG is fed only while every task checks in (runtime 180 s, Modbus 15 s, LED 15 s); a stuck task is named in `[IWDG][PREVIOUS] stale task=…` after the reset. Not forced on the bench. Note: a stuck **runtime** task can leave the unit silent ~3.5 min before recovery (180 s allowance for long modem/OTA work) |
+| — | Alert on a watchdog reset | open (owner decision): no alert fires, because only FATAL logs raise one automatically; a rule on `DEVICE_BOOT` reason WATCHDOG, or WARN alerts for repeated watchdog resets, would make lock-ups visible |
