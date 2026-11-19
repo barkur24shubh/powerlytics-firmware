@@ -384,10 +384,10 @@ Owner asked for 500 ms and 1 s; 500 ms dropped (the modem needs ~1.1 s per 1.9 K
 | 41 | Large exports capped and streamed | ❌ → ✅ capped (100 000 rows, 92 days) but built in API and browser memory (>100 MB at 1 s); now a streamed CSV, timestamps in the viewer's zone |
 | 42 | Retention deletes exactly per policy | ✅ raw 90 d, hourly 2 y, daily 5 y, logs 30 d, health 30 d, commands 90 d, resolved alerts 2 y (database expiry indexes checked); ❌ → ✅ device events had none (now 365 d, configurable); audit log kept for ever (intended) |
 
-## 25. UI checks (2026-11-19) — platform, in progress
+## 25. UI checks (2026-11-19) — platform
 
 | # | Test | Result |
 |---|---|---|
 | 43 | Every reported field shown, right units and decimals | ❌ → ✅ every number was forced to 2 decimals (count 1602 shown "1602.00", 0.004 shown "0.00"); one formatter now (whole numbers plain, 1–4 decimals by size). Units come from the port settings |
 | 44 | Online / stale states consistent | ✅ readings STALE after 3 intervals (at least 2 min); ❌ → ✅ relays were "uncertain" after 60 s, now the same rule |
-| 45 | Empty and error states; phone width | pending: needs a signed-in browser |
+| 45 | Empty and error states; phone width | ✅ 375 px: all Values tabs fit, nothing scrolls sideways; a silent device shows "Offline • Updated 63d ago", "No data available", "No events yet", no Controls tab without relays. ❌ → ✅ with the product API down the panel sent people to the login and then to a home page saying **"No devices yet" / 0 devices**; now "can't be reached, your data is safe", retried every 10 s, recovers by itself (panel and SkyMetric); home says "Couldn't load devices right now" |
