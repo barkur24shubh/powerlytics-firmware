@@ -374,3 +374,12 @@ Owner asked for 500 ms and 1 s; 500 ms dropped (the modem needs ~1.1 s per 1.9 K
 | 24 | W25Q failure fatal, SD optional | ✅ missing W25Q published once as FATAL `STORAGE/W25Q_NOT_DETECTED` (1.0.14, code only: chip cannot be removed on the bench); missing SD logged INFO (1.0.14) |
 | 25 | Flash writes within wear limits | ❌ → ✅ the seq store took a record every telemetry in **one** 4 KB sector (erased every 256 saves): ~4 years of W25Q endurance (100 k erases) at 5 s, ~1.1 years at 1 s. Now a 16-sector ring in the unused 0x050000–0x05FFFF (16× life: ~65 years at 5 s, ~17 years at 1 s) with the next slot kept in RAM (no scan of up to 256 slots per save). Bench: telemetry seq continuous across the change (72574 → 72576, the reading in flight at reset). Other writers are fine: logs ring over 64 sectors (one erase per 8 logs), config A/B only on deploy, alarm state in backup SRAM (no flash) |
 | 26 | SD removed / full does not crash | ✅ code review (no card on the bench): every write mounts, writes, unmounts; any error or a short write (full card) turns SD logging off. Open: no rotation of old files on a full card, and a card inserted later is only used after a reboot |
+
+## 24. Data history and export (2026-11-19) — platform
+
+| # | Test | Result |
+|---|---|---|
+| 39 | Rollups match raw and use the device's min/max/avg | ❌ → ✅ rollups used only the last value of each window: bench AI_1 hourly max recorded 983 vs real 1042, min 535 vs 519. Now window stats; a script rebuilds the last 90 days after deploy |
+| 40 | Rollups recomputed when late data arrives | n/a today: raw time is server receipt, so a finished hour gets no late data. Needed with backfill (G5, parked); `recompute` now builds whole days only |
+| 41 | Large exports capped and streamed | ❌ → ✅ capped (100 000 rows, 92 days) but built in API and browser memory (>100 MB at 1 s); now a streamed CSV, timestamps in the viewer's zone |
+| 42 | Retention deletes exactly per policy | ✅ raw 90 d, hourly 2 y, daily 5 y, logs 30 d, health 30 d, commands 90 d, resolved alerts 2 y (database expiry indexes checked); ❌ → ✅ device events had none (now 365 d, configurable); audit log kept for ever (intended) |
