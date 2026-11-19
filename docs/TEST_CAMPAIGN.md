@@ -349,3 +349,11 @@ Owner asked for 500 ms and 1 s; 500 ms dropped (the modem needs ~1.1 s per 1.9 K
 | 500 ms paced at 1 s, weak moments (no antenna) | ~34 | 8.3 / 28 / 31 s | ~3 % | 12–37 s |
 
 1 s is best effort: fine with a good signal, readings back up on a weak one. 5 s and slower are delivered as set.
+
+## 17. Platform audit log (2026-11-19) — platform only
+
+| # | Test | Before | Now (backend, not deployed) |
+|---|---|---|---|
+| 18 | Every operator action audited with who/when/what/before/after/result | ❌ relay commands from the panel, port/rule/safe-state changes, member role changes, invites, workspace edits, alert rules, maintenance windows, alert ack/resolve, notification destinations, log-issue resolve, staff role changes and workspace suspension left no entry; device edits had no before/after; refusals not recorded | ✅ all audited; changed fields before/after; relay commands logged once per idempotency key and also when refused (with the reason) |
+| 19 | Not editable; failed write not ignored | ✅ append-only at application level (update/delete/re-save refused); a failed write is retried once, then the whole entry goes to the error log | unchanged (a database role without update/delete rights is still recommended) |
+| 20 | Export and filter per device / user | ❌ action and target type only, no export | ✅ filters device, user, result, date range; CSV export (10 000 rows, formulas defused); panel filters and Export button |
