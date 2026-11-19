@@ -23,9 +23,9 @@ A bench board as delivered has every protection off:
    ```
 2. **Brown-out reset level 3 (2.7 V) and bootloader write protection (sectors 0–1).**
    ```
-   $P -c port=SWD mode=UR -ob BOR_LEV=0 nWRP0=0 nWRP1=0
+   $P -c port=SWD mode=UR -ob BOR_LEV=0 WRP0=0 WRP1=0
    ```
-   (`BOR_LEV`: 0 = level 3, 2.70 V; 3 = off. `nWRPn = 0` protects sector n.)
+   (`BOR_LEV`: 0 = level 3, 2.70 V; 3 = off. `WRPn=0` protects sector n; checked on STM32CubeProgrammer, which rejects the `nWRPn` names silently.)
 3. **Readout protection Level 1** (last, after everything is written and verified):
    ```
    $P -c port=SWD mode=UR -ob RDP=0xBB
@@ -35,12 +35,12 @@ A bench board as delivered has every protection off:
    ```
    $P -c port=SWD mode=HOTPLUG -ob displ
    ```
-   Expect `RDP 0xBB (Level 1)`, `BOR_LEV 0x0`, `WRP0`/`WRP1` active. Then power the unit with SIM and antenna and check the admin device page, Boot & Identity → Security: **TLS verified, RDP 1, BOR on** (reported in the hello since firmware 1.0.13).
+   Expect `RDP 0xBB (Level 1)`, `BOR_LEV 0x0`, `WRP0`/`WRP1` active. Then power the unit with SIM and antenna and check the admin device page, Boot & Identity → Security: **TLS verified, RDP 1, BOR 3** (reported in the hello since firmware 1.0.13).
 5. **Record** serial number, IMEI, firmware version and the check result in the production log.
 
 ## Recovering a locked unit (returns, repairs)
 
-Setting `RDP=0xAA` drops back to Level 0 and **mass-erases the whole flash** (firmware and config). Write protection must be removed first (`nWRP0=1 nWRP1=1`). Then reprogram from step 1. The unit's identity (IMEI) is in the modem, its registration on the platform; nothing unit-specific is lost except the local config, which the platform re-sends on the next hello.
+Setting `RDP=0xAA` drops back to Level 0 and **mass-erases the whole flash** (firmware and config). Write protection must be removed first (`WRP0=1 WRP1=1`). Then reprogram from step 1. The unit's identity (IMEI) is in the modem, its registration on the platform; nothing unit-specific is lost except the local config, which the platform re-sends on the next hello.
 
 ## Notes
 
