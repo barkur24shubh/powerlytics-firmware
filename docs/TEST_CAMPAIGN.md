@@ -410,3 +410,18 @@ Owner asked for 500 ms and 1 s; 500 ms dropped (the modem needs ~1.1 s per 1.9 K
 | — | Bootloader safe to write-protect | ✅ code review: nothing in the application or bootloader writes sectors 0–1 |
 | — | Brown-out reset 2.7 V and bootloader write protection on the bench | ✅ applied (`BOR_LEV=0 WRP0=0 WRP1=0`; the `nWRPn` names are silently ignored by the programmer); unit reports `bor:"3"`; 15 min soak at 1 s telemetry: 0 reboots, 0 brown-out resets, 0 publish errors, 677 readings; application re-flash still works; a write into sector 0 is refused and the bootloader is unchanged. RDP left at Level 0 on the bench |
 | — | Release build | open: release images use the Debug configuration (`-O0 -g3`); an optimised release configuration needs a full regression run |
+
+## OTA end to end (2026-11-19, 1.0.17 → 1.0.18 over the air)
+
+1.0.18 released through the R2 workflow (350 592 B, SHA-256 `10cdf775…`), activated, deployed to the bench unit only. Bench first put back on 1.0.17 rebuilt from its release commit.
+
+| Test | Result |
+|---|---|
+| Normal update | ✅ received → download ~2 min in 32 KB windows (each hash-checked) → whole-image SHA-256 and flash read-back match → install reset (`reason=OTA_INSTALL`) → 1.0.18 booted ~50 s later → `OTA_INSTALLED` → `OTA_CONFIRMED` after the 5-min trial; platform COMPLETED. The bootloader prints nothing over USB; it only installs signature-valid images |
+| Reset at 40 % of the download | ✅ unit back on 1.0.18 at once, working; partial image dropped (no resume). ❌ → ✅ platform kept "downloading" until the 20-min OTA timeout; now a hello after a real restart marks `OTA_DOWNLOAD_FAILED` `interrupted_by_restart` (bench: ~1 min) |
+| Rollback on request | ✅ admin rollback → unit restored its backup (1.0.17) in 35 s, `reason=OTA_ROLLBACK`, nothing downloaded; platform ROLLBACK_REQUESTED → ROLLED_BACK |
+| Update again after a rollback | ✅ 1.0.17 → 1.0.18 again, confirmed 21:27 |
+| Duplicate progress records | ❌ → ✅ every step was stored 2–3 times (each API instance receives the ack); now once (identical repeats ignored, version-checked save) |
+| Downgrade protection | ❌ open (owner decision): nothing stops deploying an older version, e.g. 1.0.17 which prints the broker login |
+
+The 4-min delay before the first dispatch was the test setup (local API without R2 credentials); production's retry dispatched it.
