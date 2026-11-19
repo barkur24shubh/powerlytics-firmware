@@ -184,6 +184,20 @@ static uint8_t seq_record_valid(const seq_record_t *r)
   return (crc32_sw(&tmp, sizeof(tmp)) == stored) ? 1U : 0U;
 }
 
+/* Seq records ring over ENGINE_SEQ_SECTORS 4 KB sectors (0x050000-0x05FFFF,
+ * free until 2026-11-19). Before, one sector took a 16-byte record every
+ * telemetry and was erased every 256 saves: ~4 years of W25Q endurance at a
+ * 5 s interval, ~1 year at 1 s. Sixteen sectors give 16x that; the next free
+ * slot is kept in RAM instead of scanning up to 256 slots on every save. */
+#define ENGINE_SEQ_SECTORS      16U
+#define ENGINE_SEQ_TOTAL_SLOTS  (ENGINE_SEQ_SLOT_COUNT * ENGINE_SEQ_SECTORS)
+static uint16_t s_seq_next_slot;
+
+static uint32_t seq_slot_addr(uint16_t slot)
+{
+  return ENGINE_SEQ_W25Q_ADDR + ((uint32_t)slot * ENGINE_SEQ_SLOT_SIZE);
+}
+
 static void seq_store(void)
 {
   if (!s_flash) return;
@@ -197,28 +211,17 @@ static void seq_store(void)
   s_saved_event_seq = rec.event_seq;
   s_saved_seq_tick = HAL_GetTick();
 
-  seq_record_t probe;
-  uint16_t slot = 0U;
-  for (; slot < ENGINE_SEQ_SLOT_COUNT; slot++) {
-    memset(&probe, 0, sizeof(probe));
-    if (!w25q_read(s_flash,
-                   ENGINE_SEQ_W25Q_ADDR + ((uint32_t)slot * ENGINE_SEQ_SLOT_SIZE),
-                   (uint8_t *)&probe,
-                   sizeof(probe))) {
-      return;
-    }
-    if (probe.magic == 0xFFFFFFFFUL) break;
+  uint16_t slot = (uint16_t)(s_seq_next_slot % ENGINE_SEQ_TOTAL_SLOTS);
+  uint32_t probe = 0U;
+  if (!w25q_read(s_flash, seq_slot_addr(slot), (uint8_t *)&probe, sizeof(probe))) return;
+  if (probe != 0xFFFFFFFFUL) {
+    /* Entering a used sector (the oldest records): erase it first. */
+    uint16_t first = (uint16_t)(slot - (slot % ENGINE_SEQ_SLOT_COUNT));
+    if (!w25q_erase_sector_4k(s_flash, seq_slot_addr(first))) return;
   }
-
-  if (slot >= ENGINE_SEQ_SLOT_COUNT) {
-    if (!w25q_erase_sector_4k(s_flash, ENGINE_SEQ_W25Q_ADDR)) return;
-    slot = 0U;
+  if (w25q_write(s_flash, seq_slot_addr(slot), (const uint8_t *)&rec, sizeof(rec))) {
+    s_seq_next_slot = (uint16_t)((slot + 1U) % ENGINE_SEQ_TOTAL_SLOTS);
   }
-
-  (void)w25q_write(s_flash,
-                   ENGINE_SEQ_W25Q_ADDR + ((uint32_t)slot * ENGINE_SEQ_SLOT_SIZE),
-                   (const uint8_t *)&rec,
-                   sizeof(rec));
 }
 
 static void seq_load(void)
@@ -227,22 +230,28 @@ static void seq_load(void)
 
   seq_record_t rec;
   uint8_t found = 0U;
+  uint16_t newest = 0U;
+  uint32_t best_t = 0U, best_e = 0U;
 
-  for (uint16_t slot = 0U; slot < ENGINE_SEQ_SLOT_COUNT; slot++) {
+  for (uint16_t slot = 0U; slot < ENGINE_SEQ_TOTAL_SLOTS; slot++) {
+    if ((slot & 31U) == 0U) app_watchdog_force_refresh();
     memset(&rec, 0, sizeof(rec));
-    if (!w25q_read(s_flash,
-                   ENGINE_SEQ_W25Q_ADDR + ((uint32_t)slot * ENGINE_SEQ_SLOT_SIZE),
-                   (uint8_t *)&rec,
-                   sizeof(rec))) {
-      return;
-    }
-
-    if (rec.magic == 0xFFFFFFFFUL) break;
-    if (seq_record_valid(&rec)) {
-      s_next_telemetry_seq = rec.telemetry_seq ? rec.telemetry_seq : 1U;
-      s_next_event_seq = rec.event_seq ? rec.event_seq : 1U;
+    if (!w25q_read(s_flash, seq_slot_addr(slot), (uint8_t *)&rec, sizeof(rec))) return;
+    if (rec.magic == 0xFFFFFFFFUL) continue;
+    if (!seq_record_valid(&rec)) continue;
+    if (!found || rec.telemetry_seq > best_t || (rec.telemetry_seq == best_t && rec.event_seq >= best_e)) {
+      best_t = rec.telemetry_seq;
+      best_e = rec.event_seq;
+      newest = slot;
       found = 1U;
     }
+  }
+  if (found) {
+    s_next_telemetry_seq = best_t ? best_t : 1U;
+    s_next_event_seq = best_e ? best_e : 1U;
+    s_seq_next_slot = (uint16_t)((newest + 1U) % ENGINE_SEQ_TOTAL_SLOTS);
+  } else {
+    s_seq_next_slot = 0U;
   }
 
   /* Event seq is saved within ~1 s of each event (app_powerlytics_engine_seq_service),
