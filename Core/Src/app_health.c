@@ -12,16 +12,30 @@
 #include "app_powerlytics_engine.h"
 #include "rtc_manager.h"
 #include "board_profile.h"
+#include "app_flash_log.h"
+#include "mqtt_handler.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 #include <stdio.h>
 #include <string.h>
 
-#define HEALTH_PUBLISH_INTERVAL_MS   20000UL
+/* 2026-11-18: the full report (~1 KB) went out every 20 s, about 2.8 MB a
+ * unit a day on cellular for health alone. It is also what keeps a unit with
+ * a long telemetry interval "seen" by the platform (hello.presenceMs 30 s).
+ * Now: a small heartbeat every 25 s keeps presence, the full report goes out
+ * every 5 min and right after every (re)connect. */
+#define HEALTH_PUBLISH_INTERVAL_MS   25000UL   /* heartbeat */
+#define HEALTH_FULL_INTERVAL_MS      300000UL
 #define SIGNAL_SAMPLE_INTERVAL_MS    60000UL
-#define HEALTH_JSON_LEN              1280U
+#define HEALTH_JSON_LEN              1536U
 
 extern char imei[20];
 extern char topic_d2c_health[64];
+extern osThreadId_t defaultTaskHandle;
+extern osThreadId_t ModbusTaskHandle;
+static uint32_t s_last_full_tick = 0U;
+static uint32_t s_full_online_enter = 0xFFFFFFFFUL;
 
 static uint32_t s_last_health_publish_tick = 0;
 static uint32_t s_boot_count = 0U;
@@ -186,6 +200,7 @@ uint8_t app_health_publish_now(void)
     snprintf(json, sizeof(json),
              "{"
              "\"type\":\"health\","
+             "\"kind\":\"full\","
              "\"uptimeMs\":%lu,"
              "\"imei\":\"%s\","
              "\"bootId\":\"%s\",\"bootCount\":%lu,\"resetReason\":\"%s\","
@@ -220,10 +235,16 @@ uint8_t app_health_publish_now(void)
                 "\"mqttDisconnect\":%lu,"
                 "\"onlineEnter\":%lu"
              "},"
-             "\"logQueue\":{"
-                "\"queued\":%u,"
-                "\"dropped\":%lu"
-             "}"
+             "\"mem\":{"
+                "\"heapFree\":%lu,"
+                "\"heapMin\":%lu,"
+                "\"stackRuntimeWords\":%lu,"
+                "\"stackModbusWords\":%lu"
+             "},"
+             "\"events\":{\"dropped\":%lu},"
+             "\"logs\":{\"pending\":%u,\"stored\":%u,\"dropped\":%lu},"
+             "\"tls\":\"%s\","
+             "\"rtcValid\":%s"
              "}",
              (unsigned long)now,
              imei,
@@ -258,8 +279,16 @@ uint8_t app_health_publish_now(void)
              (unsigned long)h->mqtt_publish_fail_count,
              (unsigned long)h->mqtt_disconnect_count,
              (unsigned long)h->online_enter_count,
-             (unsigned int)app_log_count(),
-             (unsigned long)app_log_dropped_count());
+             (unsigned long)xPortGetFreeHeapSize(),
+             (unsigned long)xPortGetMinimumEverFreeHeapSize(),
+             (unsigned long)(defaultTaskHandle ? uxTaskGetStackHighWaterMark((TaskHandle_t)defaultTaskHandle) : 0U),
+             (unsigned long)(ModbusTaskHandle ? uxTaskGetStackHighWaterMark((TaskHandle_t)ModbusTaskHandle) : 0U),
+             (unsigned long)app_powerlytics_engine_events_dropped(),
+             (unsigned int)app_flash_log_pending_count(),
+             (unsigned int)app_flash_log_total_count(),
+             (unsigned long)app_flash_log_dropped_count(),
+             MQTT_TlsVerified() ? "verified" : "unverified",
+             rtc_is_datetime_valid() ? "true" : "false");
 
     if (connectivity_publish(topic_d2c_health, json)) {
         s_last_health_publish_tick = now;
@@ -286,22 +315,35 @@ uint8_t app_health_publish_now(void)
 void app_health_run_once(void)
 {
     uint32_t now = HAL_GetTick();
+    const connectivity_health_t *h = connectivity_get_health();
 
-    /*
-     * Do not publish health immediately after boot/online.
-     * Let telemetry stabilize first.
-     */
+    /* Do not publish right after boot: let telemetry go first. */
     if (s_last_health_publish_tick == 0U) {
         s_last_health_publish_tick = now;
         return;
     }
+    if ((now - s_last_health_publish_tick) < 5000UL) return;
+
+    uint8_t reconnected = (h->online_enter_count != s_full_online_enter) ? 1U : 0U;
+    uint8_t full_due = (s_last_full_tick == 0U) || ((now - s_last_full_tick) >= HEALTH_FULL_INTERVAL_MS);
+    if (reconnected || full_due) {
+        /* Timestamps move before publishing: a failure is not retried every loop. */
+        s_last_health_publish_tick = now;
+        s_last_full_tick = now;
+        s_full_online_enter = h->online_enter_count;
+        (void)app_health_publish_now();
+        return;
+    }
+
+    /* Telemetry faster than the heartbeat already shows the unit is alive. */
+    if (app_powerlytics_engine_get_telemetry_interval_ms() < HEALTH_PUBLISH_INTERVAL_MS) return;
 
     if ((now - s_last_health_publish_tick) >= HEALTH_PUBLISH_INTERVAL_MS) {
-        /*
-         * Move the timestamp before publish.
-         * Even if publish fails, we do not retry every loop.
-         */
+        char json[128];
         s_last_health_publish_tick = now;
-        (void)app_health_publish_now();
+        snprintf(json, sizeof(json),
+                 "{\"type\":\"health\",\"kind\":\"heartbeat\",\"uptimeMs\":%lu,\"bootId\":\"%s\"}",
+                 (unsigned long)now, s_boot_id);
+        (void)connectivity_publish(topic_d2c_health, json);
     }
 }

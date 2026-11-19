@@ -1466,15 +1466,32 @@ fail:
 static uint32_t s_last_mqtt_publish_attempt_tick = 0;
 static uint32_t s_last_normal_publish_tick = 0;
 
+/* The 3 s gap between normal publishes also capped telemetry at one every
+ * ~3.4 s whatever the interval. With a faster interval (1.0.15: 500 ms /
+ * 1 s options) the gap follows the interval, never under 300 ms. */
+static uint32_t normal_publish_gap_ms(void)
+{
+    uint32_t interval = app_modbus_payload_get_telemetry_interval_ms();
+    if (interval >= MQTT_PUBLISH_MIN_GAP_MS) return MQTT_PUBLISH_MIN_GAP_MS;
+    /* Never under 1 s: at 500 ms the unit handed the modem ~2 KB faster than
+     * the cellular uplink carried it, readings queued and reached the cloud
+     * 7-19 s late, and command acks waited up to 19 s. At 1 s the backlog
+     * does not build (bench 2026-11-19: delay p50 1.0 s). */
+    return (interval < 1000UL) ? 1000UL : interval;
+}
+
 static uint32_t normal_publish_wait_ms(uint32_t now)
 {
     uint32_t since_normal = now - s_last_normal_publish_tick;
     uint32_t since_any = now - s_last_mqtt_publish_attempt_tick;
-    uint32_t a = (since_normal < MQTT_PUBLISH_MIN_GAP_MS) ? (MQTT_PUBLISH_MIN_GAP_MS - since_normal) : 0U;
+    uint32_t gap = normal_publish_gap_ms();
+    uint32_t a = (since_normal < gap) ? (gap - since_normal) : 0U;
     uint32_t b = (since_any < MQTT_PUBLISH_AFTER_PRIORITY_MS) ? (MQTT_PUBLISH_AFTER_PRIORITY_MS - since_any) : 0U;
     return (a > b) ? a : b;
 }
 static uint32_t s_mqtt_publish_block_until_tick = 0;
+
+#define MQTT_FAST_TELEMETRY_MAX_MS 2000UL
 
 static uint8_t mqtt_publish_impl(const char *topic, const char *payload, uint8_t enforce_min_gap)
 {
@@ -1513,6 +1530,12 @@ static uint8_t mqtt_publish_impl(const char *topic, const char *payload, uint8_t
     if (enforce_min_gap) s_last_normal_publish_tick = s_last_mqtt_publish_attempt_tick;
 
     char cmd[128];
+    /* Fast telemetry (and health while it runs): QoS 0, short pauses
+     * between the modem steps. Health is included because a QoS 1 health
+     * message waited 13 s for its PUBACK on the bench and stalled telemetry. */
+    uint8_t fast = ((strcmp(topic, topic_d2c_telemetry) == 0 || strcmp(topic, topic_d2c_health) == 0) &&
+                    app_modbus_payload_get_telemetry_interval_ms() <= MQTT_FAST_TELEMETRY_MAX_MS) ? 1U : 0U;
+    uint32_t step_delay = fast ? 30U : 100U;
     print("[MQTT PUB] sending %s payloadLen=%lu\r\n",
           mqtt_topic_kind(topic),
           (unsigned long)strlen(payload));
@@ -1524,7 +1547,7 @@ static uint8_t mqtt_publish_impl(const char *topic, const char *payload, uint8_t
         goto fail;
     }
 
-    osDelay(100);
+    osDelay(step_delay);
 
     fail_stage = "TOPIC_SEND";
     if (!SendCommandWithRetry(topic, "OK", MQTT_PUBLISH_TOPIC_SEND_MS, 1)) {
@@ -1532,7 +1555,7 @@ static uint8_t mqtt_publish_impl(const char *topic, const char *payload, uint8_t
         goto fail;
     }
 
-    osDelay(100);
+    osDelay(step_delay);
 
     snprintf(cmd, sizeof(cmd), "AT+CMQTTPAYLOAD=0,%d", (int)strlen(payload));
     fail_stage = "PAYLOAD_PROMPT";
@@ -1541,7 +1564,7 @@ static uint8_t mqtt_publish_impl(const char *topic, const char *payload, uint8_t
         goto fail;
     }
 
-    osDelay(100);
+    osDelay(step_delay);
 
     fail_stage = "PAYLOAD_SEND";
     if (!SendCommandWithRetry(payload, "OK", MQTT_PUBLISH_PAYLOAD_SEND_MS, 1)) {
@@ -1549,10 +1572,18 @@ static uint8_t mqtt_publish_impl(const char *topic, const char *payload, uint8_t
         goto fail;
     }
 
-    osDelay(100);
+    osDelay(step_delay);
 
+    /* Fast telemetry (interval <= 2 s, 1.0.15) goes at QoS 0: waiting for
+     * the broker's PUBACK took 1-5 s on the bench (India -> eu-central-1
+     * over cellular), so at QoS 1 a 500 ms / 1 s interval delivered one
+     * reading every ~6 s. At QoS 0 an occasional reading can be lost; the
+     * platform counts it as a gap (telemetry seq). Everything else stays
+     * QoS 1. */
+    uint8_t qos = fast ? 0U : 1U;
+    snprintf(cmd, sizeof(cmd), "AT+CMQTTPUB=0,%u,60", (unsigned)qos);
     fail_stage = "PUB_CMD_OK";
-    if (!SendCommandWithRetry("AT+CMQTTPUB=0,1,60", "OK", MQTT_PUBLISH_CMD_OK_TIMEOUT_MS, 1)) {
+    if (!SendCommandWithRetry(cmd, "OK", MQTT_PUBLISH_CMD_OK_TIMEOUT_MS, 1)) {
         print("[MQTT PUB][ERR] publish command was rejected by modem\r\n");
         goto fail;
     }

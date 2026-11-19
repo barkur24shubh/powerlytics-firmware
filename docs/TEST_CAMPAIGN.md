@@ -329,3 +329,23 @@ Open (proposals, not built): `latchMode` on the device; sensor-fault detection f
 | 15 | FATAL raises a critical alert; routine conditions never FATAL | ❌ SIM not ready 5×, MQTT connect/publish/subscribe 5×, GPRS 5×, modem soft reset → FATAL (critical alert each time); every boot logged ERROR; a crash only ERROR; missing SD card ERROR | ✅ routine → ERROR; crash (`MCU_FAULT_RESET`, `FAULT_*` boot) → FATAL; boot level by cause (power-on/OTA INFO, brown-out/modem recovery WARN, watchdog ERROR); SD absent INFO |
 | 16 | API key never sent to the broker | ❌ every log carried `apiKey` | ✅ removed; platform attributes MQTT logs by topic IMEI (backend change, must deploy before 1.0.14 ships) |
 | 17 | Log viewer searchable, filterable, ordered | ✅ level/module/event/text search/sort by received time work; ❌ each log stored once per API instance (2–4 copies); a clock ahead pinned rows on top | ✅ (backend) stored once by `seq`/`fid` + ts; device times > 5 min ahead replaced by server time |
+
+## 15. Health and diagnostics (2026-11-19, firmware 1.0.15)
+
+| # | Test | Before | 1.0.15 |
+|---|---|---|---|
+| 9 | Health on schedule with every field, stored, shown | ❌ full report (~770 B) every ~23 s (≈2.8 MB/unit/day); platform kept only signal, uptime, fw, config, boot; memory, event drops and log store not sent | ✅ full report every 5 min and after each reconnect (+ `mem`, `events.dropped`, `logs`, `tls`, `rtcValid`, `kind:"full"`); 79 B heartbeat every 25 s keeps presence (≈0.5 MB/day); platform stores the latest (`Device.health`) and a 30-day history; admin Health card |
+| 10 | Signal, counters, heap/stack as trends | ❌ latest value only | ✅ admin card: 24 h trend lines for signal, lowest free heap, both task stacks; counters since boot |
+| 11 | Health does not delay telemetry/commands | ⚠️ a QoS 1 health message once waited 13 s for its PUBACK and stalled telemetry 16 s | ✅ heartbeat is tiny; in fast mode health is QoS 0 and the heartbeat is skipped |
+
+## Telemetry interval 1 s, best effort (2026-11-19, firmware 1.0.15)
+
+Owner asked for 500 ms and 1 s; 500 ms dropped (the modem needs ~1.1 s per 1.9 KB message). For intervals ≤ 2 s telemetry and health go at QoS 0 (waiting for the PUBACK took 1–5 s, once 13 s); publish pacing follows the interval (was a fixed 3 s, so "1 s" really ran at ~3.5 s), never under 1 s; the post-publish downlink window is a quarter of the interval (max 3 s); no USB echo of the JSON in fast mode.
+
+| Run (antenna on, −71…−77 dBm) | Readings/min | Delay to platform p50 / p90 / max | Lost | Relay command → ACKED on platform |
+|---|---|---|---|---|
+| 1 s, 12 min | 41–44 | 0.4 / 1.1 / 4.8 s | 6 / 504 (1.2 %) | 3.4–6.5 s (12/12) |
+| 5 s, 10 min | 11–12 (median gap 5.2 s) | 1.0 / 3.0 / 4.6 s | 0 / 109 | 4.3–8.7 s (10/10) |
+| 500 ms paced at 1 s, weak moments (no antenna) | ~34 | 8.3 / 28 / 31 s | ~3 % | 12–37 s |
+
+1 s is best effort: fine with a good signal, readings back up on a weak one. 5 s and slower are delivered as set.

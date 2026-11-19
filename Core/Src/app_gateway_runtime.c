@@ -224,6 +224,19 @@ static uint8_t process_downlink_once(const char *tag)
     return 0U;
 }
 
+/* The idle wait between cycles handles downlinks, acks and events too, so
+ * the window after a publish only needs to be short. A fixed 3 s window
+ * made every cycle at least ~5 s whatever the interval (1.0.15: at most a
+ * quarter of the interval, never more than before). */
+static uint32_t after_pub_window_ms(void)
+{
+    uint32_t interval = app_modbus_payload_get_telemetry_interval_ms();
+    uint32_t w = interval / 4U;
+    if (w > DOWNLINK_AFTER_PUB_WINDOW_MS) w = DOWNLINK_AFTER_PUB_WINDOW_MS;
+    if (w < DOWNLINK_POLL_STEP_MS) w = DOWNLINK_POLL_STEP_MS;
+    return w;
+}
+
 static uint8_t wait_for_downlink_window(uint32_t window_ms)
 {
     uint32_t start = HAL_GetTick();
@@ -285,7 +298,8 @@ static telemetry_result_t publish_telemetry_once(void)
 
     if (payload && payload[0])
     {
-        print_telemetry_payload(payload);
+        /* Echoing ~2 KB to USB took 0.26 s a cycle: skip it when fast. */
+        if (app_modbus_payload_get_telemetry_interval_ms() >= 5000U) print_telemetry_payload(payload);
         uint8_t ok = connectivity_publish_telemetry(payload);
 
         if (ok || connectivity_last_publish_attempted())
@@ -704,7 +718,7 @@ void app_gateway_runtime_task(void *argument)
          */
         if (publish_event_once())
         {
-            if (wait_for_downlink_window(DOWNLINK_AFTER_PUB_WINDOW_MS))
+            if (wait_for_downlink_window(after_pub_window_ms()))
             {
                 osDelay(DOWNLINK_HANDLED_DELAY_MS);
                 continue;
@@ -726,7 +740,7 @@ void app_gateway_runtime_task(void *argument)
         /*
          * Priority 5: after telemetry, wait briefly for downlink/config.
          */
-        if (wait_for_downlink_window(DOWNLINK_AFTER_PUB_WINDOW_MS))
+        if (wait_for_downlink_window(after_pub_window_ms()))
         {
             osDelay(DOWNLINK_HANDLED_DELAY_MS);
             continue;
