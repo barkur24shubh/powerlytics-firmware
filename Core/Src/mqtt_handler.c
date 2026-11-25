@@ -9,6 +9,7 @@
  */
 
 #include "mqtt_handler.h"
+#include "app_powerlytics_engine.h"
 #include "mqtt_root_ca.h"
 #include "app_gateway_platform.h"
 #include "main.h"
@@ -1999,16 +2000,19 @@ static uint8_t handle_actuation_cjson(cJSON *root)
 
     if (strcmp(action_str, "TURN_ON") == 0)
     {
-        ok = app_relay_command(port_str, 1U, &fail_reason);
+        if (!app_powerlytics_engine_relay_command_allowed(port_str, 1U)) fail_reason = "rule_active";
+        else ok = app_relay_command(port_str, 1U, &fail_reason);
     }
     else if (strcmp(action_str, "TURN_OFF") == 0)
     {
-        ok = app_relay_command(port_str, 0U, &fail_reason);
+        if (!app_powerlytics_engine_relay_command_allowed(port_str, 0U)) fail_reason = "rule_active";
+        else ok = app_relay_command(port_str, 0U, &fail_reason);
     }
     else if (strcmp(action_str, "TOGGLE") == 0)
     {
         uint8_t current = app_relay_get_by_key(port_str);
-        ok = app_relay_command(port_str, current ? 0U : 1U, &fail_reason);
+        if (!app_powerlytics_engine_relay_command_allowed(port_str, current ? 0U : 1U)) fail_reason = "rule_active";
+        else ok = app_relay_command(port_str, current ? 0U : 1U, &fail_reason);
     }
     else
     {

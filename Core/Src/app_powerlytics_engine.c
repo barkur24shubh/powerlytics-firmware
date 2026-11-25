@@ -1,5 +1,6 @@
 #include "app_powerlytics_engine.h"
 #include "app_rule_eval.h"
+#include "app_rule_action.h"
 
 #include "app_board_io.h"
 #include "app_debug_led.h"
@@ -123,6 +124,9 @@ static uint8_t s_modbus_next_read[MODBUS_MAX_SLAVES];
 /* CPU-only JSON storage lives in CCM so normal SRAM remains available to DMA and FreeRTOS. */
 static char s_telemetry_json[ENGINE_JSON_MAX] __attribute__((section(".ccmram"), aligned(4)));
 static char s_event_queue[ENGINE_EVENT_QUEUE][ENGINE_EVENT_MAX] __attribute__((section(".ccmram"), aligned(4)));
+
+/* Relays held by a rule's local action (FH-018, 1.0.19). */
+static app_act_t s_act;
 static volatile uint8_t s_event_w;
 static volatile uint8_t s_event_r;
 static uint16_t s_mb_regs[ENGINE_MB_REG_MAX];
@@ -676,7 +680,25 @@ static uint32_t rule_hash(const char *where1, const char *where2, uint8_t index,
   k.high = r->high;
   k.low = r->low;
   k.hysteresis = r->hysteresis;
-  return crc32_sw(&k, sizeof(k));
+  uint32_t h = crc32_sw(&k, sizeof(k));
+  if (r->act != 0U) {
+    /* An action is part of what the rule is: changing it ends the old relay hold. A rule without one hashes
+     * exactly as before 1.0.19, so alarms kept in backup SRAM across the update still match. */
+    h ^= crc32_sw(&r->act, sizeof(r->act)) | 1U;
+  }
+  return h;
+}
+
+/* Who holds a relay: a 16-bit identity of the rule, never 0. */
+static uint8_t act_usable(const powerlytics_rule_cfg_t *r)
+{
+  uint8_t relay = POWERLYTICS_ACT_RELAY(r);
+  return (relay != 0U && relay != POWERLYTICS_ACT_INVALID && relay <= APP_ACT_MAX_RELAYS) ? 1U : 0U;
+}
+
+static uint16_t act_owner(const char *where1, const char *where2, uint8_t index, const powerlytics_rule_cfg_t *r)
+{
+  return (uint16_t)((rule_hash(where1, where2, index, r) & 0xFFFFUL) | 1U);
 }
 
 typedef void (*rule_visit_fn)(const char *source, const char *slave_id, const char *read_id,
@@ -777,6 +799,10 @@ static void restore_active(const char *source, const char *slave_id, const char 
   const hash_set_t *set = (const hash_set_t *)ctx;
   if (hash_set_has(set, rule_hash(slave_id ? slave_id : source, read_id, index, rule))) {
     app_rule_restore_active(rt, HAL_GetTick());
+    /* The relay went to its safe state at boot: a rule that is still in alarm takes it back. */
+    if (act_usable(rule)) {
+      app_act_raise(&s_act, (uint8_t)(POWERLYTICS_ACT_RELAY(rule) - 1U), act_owner(slave_id ? slave_id : source, read_id, index, rule), POWERLYTICS_ACT_RAISE(rule));
+    }
   }
 }
 
@@ -789,6 +815,10 @@ static void recover_dropped(const char *source, const char *slave_id, const char
   const hash_set_t *next = (const hash_set_t *)ctx;
   if (!app_rule_is_active(rt)) return;
   if (hash_set_has(next, rule_hash(slave_id ? slave_id : source, read_id, index, rule))) return;
+  /* The rule that held a relay is gone: free it, leave its state (nobody knows what is safe now). */
+  if (act_usable(rule)) {
+    app_act_release(&s_act, (uint8_t)(POWERLYTICS_ACT_RELAY(rule) - 1U), act_owner(slave_id ? slave_id : source, read_id, index, rule));
+  }
   float threshold = (rule->type == POWERLYTICS_RULE_THRESHOLD_LOW) ? rule->low : rule->high;
   if (rule->type == POWERLYTICS_RULE_OUT_OF_RANGE || rule->type == POWERLYTICS_RULE_IN_RANGE) {
     threshold = (last < rule->low) ? rule->low : rule->high;
@@ -797,12 +827,26 @@ static void recover_dropped(const char *source, const char *slave_id, const char
                           last, last, threshold, "\"reason\":\"rule_changed\"");
 }
 
+/* ,"act":"RO_1=0": what the rule does to its relay on this edge, for the event (the relay's own report shows
+ * what really happened). */
+static void append_act_extra(const powerlytics_rule_cfg_t *cfg, app_rule_ev_t ev, char *buf, int max)
+{
+  if (!cfg || !act_usable(cfg)) return;
+  int idx = (int)strlen(buf);
+  if (ev == RULE_EV_RAISE) {
+    jb_append(buf, max, &idx, "%s\"act\":\"RO_%u=%u\"", idx ? "," : "", (unsigned)POWERLYTICS_ACT_RELAY(cfg), (unsigned)POWERLYTICS_ACT_RAISE(cfg));
+  } else if (POWERLYTICS_ACT_HAS_CLEAR(cfg)) {
+    jb_append(buf, max, &idx, "%s\"act\":\"RO_%u=%u\"", idx ? "," : "", (unsigned)POWERLYTICS_ACT_RELAY(cfg), (unsigned)POWERLYTICS_ACT_CLEAR(cfg));
+  }
+}
+
 static void evaluate_threshold_rule(const char *source,
                                     const char *slave_id,
                                     const char *read_id,
                                     const powerlytics_rule_cfg_t *cfg,
                                     rule_runtime_t *rt,
-                                    float value)
+                                    float value,
+                                    uint8_t index)
 {
   app_rule_out_t out;
   app_rule_ev_t ev = app_rule_step(cfg, rt, value, HAL_GetTick(), &out);
@@ -814,9 +858,19 @@ static void evaluate_threshold_rule(const char *source,
 
   char extra[128];
   build_rule_extra(cfg, 0U, extra, (int)sizeof(extra));
+  append_act_extra(cfg, ev, extra, (int)sizeof(extra));
   uint32_t now = HAL_GetTick();
   if (event_push_json_x(source, out.event_type, cfg->severity, slave_id, read_id,
                         value, out.previous, out.threshold, extra[0] ? extra : NULL)) {
+    /* The alarm is now known to the cloud: act on the relay (written by the service below, retried until accepted). */
+    if (act_usable(cfg)) {
+      uint8_t relay = (uint8_t)(POWERLYTICS_ACT_RELAY(cfg) - 1U);
+      uint16_t owner = act_owner(slave_id ? slave_id : source, read_id, index, cfg);
+      if (ev == RULE_EV_RAISE) app_act_raise(&s_act, relay, owner, POWERLYTICS_ACT_RAISE(cfg));
+      else (void)app_act_clear(&s_act, relay, owner, POWERLYTICS_ACT_HAS_CLEAR(cfg) ? (int8_t)POWERLYTICS_ACT_CLEAR(cfg) : (int8_t)-1);
+      print("[RULE] %s %s -> RO_%u %s\r\n", source, ev == RULE_EV_RAISE ? "raise" : "clear", (unsigned)POWERLYTICS_ACT_RELAY(cfg),
+            ev == RULE_EV_RAISE ? (POWERLYTICS_ACT_RAISE(cfg) ? "ON" : "OFF") : (POWERLYTICS_ACT_HAS_CLEAR(cfg) ? (POWERLYTICS_ACT_CLEAR(cfg) ? "ON" : "OFF") : "unchanged"));
+    }
     if (app_rule_commit(rt, ev, now)) {
       print("[RULE] %s %s chattering: recovery held %lu s\r\n", source,
             out.event_type, (unsigned long)(RULE_CHATTER_HOLD_MS / 1000UL));
@@ -834,7 +888,7 @@ static void evaluate_analog_rules(const char *source,
                                   float value)
 {
   for (uint8_t i = 0U; i < count && i < POWERLYTICS_MAX_RULES_PER_POINT; i++) {
-    evaluate_threshold_rule(source, slave_id, read_id, &rules[i], &rt[i], value);
+    evaluate_threshold_rule(source, slave_id, read_id, &rules[i], &rt[i], value, i);
   }
 }
 
@@ -1163,6 +1217,8 @@ void app_powerlytics_engine_init(mbm_t *mbm)
 {
   s_mbm = mbm;
   s_next_sample_ms = HAL_GetTick();
+  /* s_act is not reset here: the configuration is applied (and a rule still in alarm re-takes its relay) before
+   * the engine is initialised at boot, and the static is zero at start-up. */
 }
 
 /* The last telemetry snapshot built for the cloud (NULL before the first):
@@ -1243,9 +1299,39 @@ void app_powerlytics_engine_apply_config(const modbus_cfg_t *cfg)
         (unsigned long)s_cfg.sample_interval_ms);
 }
 
+/* Writes the relay states the rules want. The driver refuses a change inside its chatter guard, so a wanted
+ * state stays pending and is tried again on the next tick until it is accepted. */
+static void act_service(void)
+{
+  uint8_t count = app_relay_count();
+  for (uint8_t i = 0U; i < count && i < APP_ACT_MAX_RELAYS; i++) {
+    uint8_t state;
+    if (!app_act_next(&s_act, i, &state)) continue;
+    char key[8];
+    snprintf(key, sizeof(key), "RO_%u", (unsigned)(i + 1U));
+    const char *reason = NULL;
+    if (app_relay_command(key, state, &reason) != 0U) {
+      app_act_done(&s_act, i);
+    } else if (reason && strcmp(reason, "min_switch_interval") != 0) {
+      /* A refusal that will not change (unknown port, driver failure): do not retry forever. */
+      print("[RULE][ERR] %s write %u refused: %s\r\n", key, (unsigned)state, reason);
+      app_act_done(&s_act, i);
+    }
+  }
+}
+
+/* 1 when an outside command (the platform) may set this relay. A relay held by a rule in alarm refuses the
+ * opposite state, with the reason "rule_active"; the held state itself is accepted. */
+uint8_t app_powerlytics_engine_relay_command_allowed(const char *port_key, uint8_t requested)
+{
+  if (!port_key || strncmp(port_key, "RO_", 3U) != 0 || port_key[3] < '1' || port_key[3] > '8' || port_key[4] != '\0') return 1U;
+  return app_act_command_allowed(&s_act, (uint8_t)(port_key[3] - '1'), requested);
+}
+
 void app_powerlytics_engine_sample_due(void)
 {
   service_pending_di_edges();
+  act_service();
 
   if (!s_cfg_valid) return;
 

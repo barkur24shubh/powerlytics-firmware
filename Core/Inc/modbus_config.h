@@ -231,7 +231,24 @@ typedef struct {
   float    hysteresis;
   uint8_t  context_count;
   char     context_keys[POWERLYTICS_MAX_CONTEXT_KEYS][POWERLYTICS_CONTEXT_KEY_LEN];
+  /* Local action (FH-018, firmware 1.0.19), packed into ONE byte that sits in the struct's end padding, so
+   * sizeof(powerlytics_rule_cfg_t) and with it every configuration already stored in flash stay valid across the
+   * update (the stored config is a raw struct whose length is checked on load). 0 = no action. A stored config
+   * written before 1.0.19 has zero there. Bits 0-3 relay (1..8 = RO_n, 15 = named badly), bit 4 state while the
+   * alarm is active, bit 5 has a restore state, bit 6 the restore state. */
+  uint8_t  act;
 } powerlytics_rule_cfg_t;
+
+#define POWERLYTICS_ACT_INVALID        0x0Fu
+#define POWERLYTICS_ACT_RELAY(r)       ((uint8_t)((r)->act & 0x0Fu))
+#define POWERLYTICS_ACT_RAISE(r)       ((uint8_t)(((r)->act >> 4) & 1u))
+#define POWERLYTICS_ACT_HAS_CLEAR(r)   ((uint8_t)(((r)->act >> 5) & 1u))
+#define POWERLYTICS_ACT_CLEAR(r)       ((uint8_t)(((r)->act >> 6) & 1u))
+#define POWERLYTICS_ACT_PACK(relay, raise, has_clear, clear) \
+  ((uint8_t)(((relay) & 0x0Fu) | (((raise) & 1u) << 4) | (((has_clear) & 1u) << 5) | (((clear) & 1u) << 6)))
+
+/* Configurations stored in flash by earlier firmware must keep loading: the rule struct may not grow. */
+_Static_assert(sizeof(powerlytics_rule_cfg_t) == 80u, "powerlytics_rule_cfg_t changed size: stored configs would be refused on load");
 
 typedef struct {
   char     key[16];

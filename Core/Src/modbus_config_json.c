@@ -271,6 +271,24 @@ static void parse_rules(cJSON *rules, powerlytics_rule_cfg_t out[POWERLYTICS_MAX
     cJSON *latch = cJSON_GetObjectItemCaseSensitive(r, "latchMode");
     rule->latch_mode = latch_from_str(cJSON_IsString(latch) ? latch->valuestring : NULL);
 
+    /* Optional local action: actPort "RO_n", actRaise 0|1, optional actClear 0|1. */
+    cJSON *act = cJSON_GetObjectItemCaseSensitive(r, "actPort");
+    if (act != NULL) {
+      rule->act = POWERLYTICS_ACT_INVALID; /* until it parses: the config is then refused with a reason */
+      cJSON *raise = cJSON_GetObjectItemCaseSensitive(r, "actRaise");
+      if (cJSON_IsString(act) && act->valuestring && strncmp(act->valuestring, "RO_", 3U) == 0 &&
+          act->valuestring[3] >= '1' && act->valuestring[3] <= '8' && act->valuestring[4] == '\0' &&
+          cJSON_IsNumber(raise) && (raise->valuedouble == 0.0 || raise->valuedouble == 1.0)) {
+        uint8_t has_clear = 0U, clear_state = 0U;
+        cJSON *clear = cJSON_GetObjectItemCaseSensitive(r, "actClear");
+        if (cJSON_IsNumber(clear) && (clear->valuedouble == 0.0 || clear->valuedouble == 1.0)) {
+          has_clear = 1U;
+          clear_state = (uint8_t)clear->valuedouble;
+        }
+        rule->act = POWERLYTICS_ACT_PACK((uint8_t)(act->valuestring[3] - '0'), (uint8_t)raise->valuedouble, has_clear, clear_state);
+      }
+    }
+
     cJSON *num = cJSON_GetObjectItemCaseSensitive(r, "debounceMs");
     if (cJSON_IsNumber(num) && num->valuedouble > 0.0) rule->debounce_ms = (uint32_t)num->valuedouble;
 

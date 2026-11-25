@@ -372,6 +372,46 @@ static void s16_cycling_not_chatter(void)
   CHECK(tl.raises == 10 && tl.recovers == 10, "raises=%d recovers=%d", tl.raises, tl.recovers);
 }
 
+/* S17: a rule that drives a relay (firmware 1.0.19, FH-018). */
+static void s17_action_config(void)
+{
+  printf("S17 action fields: validity and rule identity\n");
+  const char *why = NULL;
+  powerlytics_rule_cfg_t base = rule(POWERLYTICS_RULE_THRESHOLD_HIGH, 0, 80, 5, 0, 0);
+
+  powerlytics_rule_cfg_t withact = base;
+  withact.act = POWERLYTICS_ACT_PACK(1U, 0U, 1U, 1U);
+  CHECK(app_rule_cfg_valid(&withact, &why) == 1U, "a threshold rule may drive RO_1 (%s)", why ? why : "");
+
+  powerlytics_rule_cfg_t bad = base;
+  bad.act = POWERLYTICS_ACT_INVALID;
+  CHECK(app_rule_cfg_valid(&bad, &why) == 0U && why && strcmp(why, "invalid_rule_action") == 0, "a badly named action is refused with a reason");
+
+  powerlytics_rule_cfg_t edge = rule(POWERLYTICS_RULE_RISING_EDGE, 0, 0, 0, 0, 0);
+  edge.act = POWERLYTICS_ACT_PACK(1U, 0U, 0U, 0U);
+  CHECK(app_rule_cfg_valid(&edge, &why) == 0U && why && strcmp(why, "invalid_rule_action") == 0, "an edge rule cannot drive a relay (it never clears)");
+
+  CHECK(app_rule_same_meaning(&base, &withact) == 0U, "adding an action is a different rule");
+  powerlytics_rule_cfg_t other = withact;
+  other.act = POWERLYTICS_ACT_PACK(1U, 1U, 1U, 1U);
+  CHECK(app_rule_same_meaning(&withact, &other) == 0U, "changing the raise state is a different rule");
+  other = withact;
+  other.act = POWERLYTICS_ACT_PACK(1U, 0U, 0U, 0U);
+  CHECK(app_rule_same_meaning(&withact, &other) == 0U, "dropping the restore is a different rule");
+  other = withact;
+  other.severity = 2U; other.duration_ms = 9999U;
+  CHECK(app_rule_same_meaning(&withact, &other) == 1U, "severity and timing still do not change the meaning");
+  CHECK(POWERLYTICS_ACT_RELAY(&withact) == 1U && POWERLYTICS_ACT_RAISE(&withact) == 0U && POWERLYTICS_ACT_HAS_CLEAR(&withact) == 1U && POWERLYTICS_ACT_CLEAR(&withact) == 1U, "the packed byte reads back");
+  CHECK(POWERLYTICS_ACT_RELAY(&base) == 0U, "a rule from a stored config written before 1.0.19 has no action");
+
+  /* the state machine itself is unchanged by an action */
+  powerlytics_rule_cfg_t cfg = withact;
+  app_rule_runtime_t rt; memset(&rt, 0, sizeof(rt));
+  app_rule_out_t out;
+  app_rule_ev_t ev = app_rule_step(&cfg, &rt, 90.0f, 1000U, &out);
+  CHECK(ev == RULE_EV_RAISE, "still raises on the sample that crosses");
+}
+
 int main(void)
 {
   s1_tank_h_hh();
@@ -390,6 +430,7 @@ int main(void)
   s14_same_meaning();
   s15_floating_input();
   s16_cycling_not_chatter();
+  s17_action_config();
   printf("\n%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

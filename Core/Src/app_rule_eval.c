@@ -22,6 +22,10 @@ uint8_t app_rule_cfg_valid(const powerlytics_rule_cfg_t *cfg, const char **reaso
 
   if (!cfg) {
     why = "invalid_rule";
+  } else if (POWERLYTICS_ACT_RELAY(cfg) == POWERLYTICS_ACT_INVALID) {
+    why = "invalid_rule_action"; /* the action was named badly (not RO_1..RO_8, or no actRaise) */
+  } else if (POWERLYTICS_ACT_RELAY(cfg) != 0U && !app_rule_is_analog(cfg->type)) {
+    why = "invalid_rule_action"; /* an action needs an alarm that clears: edge rules have none */
   } else if (!app_rule_is_analog(cfg->type)) {
     why = NULL; /* edge rules carry no numbers */
   } else if (!finite_f(cfg->high) || !finite_f(cfg->low) || !finite_f(cfg->hysteresis)) {
@@ -50,6 +54,8 @@ uint8_t app_rule_same_meaning(const powerlytics_rule_cfg_t *a, const powerlytics
   if (a->type != b->type) return 0U;
   if (a->enabled != b->enabled) return 0U;
   if (!app_rule_is_analog(a->type)) return 1U;
+  /* A different action is a different rule: the old relay hold must end. */
+  if (a->act != b->act) return 0U;
   /* Durations and severity do not change whether the alarm holds. */
   return (a->high == b->high && a->low == b->low && a->hysteresis == b->hysteresis) ? 1U : 0U;
 }
