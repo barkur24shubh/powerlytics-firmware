@@ -12,6 +12,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "app_identity.h"
 #include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -763,6 +764,8 @@ int main(void)
   app_gateway_flash_test(&s_flash);
   connectivity_set_ota_flash(&s_flash);
   modbus_cfg_set_flash(&s_flash);
+  app_identity_set_flash(&s_flash);
+  app_identity_load(); /* before the configuration is applied: the record is the first source of the unit's id */
   app_watchdog_force_refresh();
 
   app_boot_stage_enter(RTC_BOOT_STAGE_CONFIG_LOAD);

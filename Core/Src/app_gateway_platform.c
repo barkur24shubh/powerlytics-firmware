@@ -25,6 +25,7 @@ static const char *reset_intent_name(uint32_t intent)
         case APP_RESET_INTENT_OTA_INSTALL:    return "OTA_INSTALL";
         case APP_RESET_INTENT_OTA_ROLLBACK:   return "OTA_ROLLBACK";
         case APP_RESET_INTENT_MODEM_RECOVERY: return "MODEM_RECOVERY";
+        case APP_RESET_INTENT_IDENTITY:       return "IDENTITY_CHANGE";
         default:                              return NULL;
     }
 }

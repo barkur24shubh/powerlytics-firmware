@@ -1,5 +1,6 @@
 #include "usb_device.h"
 #include "usbd_cdc_if.h"
+#include "app_identity.h"
 
 static uint8_t UserRxBufferFS[64];
 static uint8_t UserTxBufferFS[1024];
@@ -20,7 +21,7 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t *buffer, uint16_t length)
 }
 static int8_t CDC_Receive_FS(uint8_t *buffer, uint32_t *length)
 {
-    (void)length;
+    if (length && *length) app_identity_usb_rx(buffer, *length); /* "ID" commands (app_identity.c); copied only, parsed in a task */
     USBD_CDC_SetRxBuffer(&hUsbDeviceFS, buffer);
     USBD_CDC_ReceivePacket(&hUsbDeviceFS);
     return (int8_t)USBD_OK;

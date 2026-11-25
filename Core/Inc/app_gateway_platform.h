@@ -34,6 +34,7 @@ typedef struct
 #define APP_RESET_INTENT_OTA_INSTALL    0x0100UL
 #define APP_RESET_INTENT_OTA_ROLLBACK   0x0200UL
 #define APP_RESET_INTENT_MODEM_RECOVERY 0x0300UL
+#define APP_RESET_INTENT_IDENTITY       0x0600UL /* restart after the unit learned its deviceId (1.0.20) */
 #define APP_RESET_INTENT_FAULT          0x0500UL
 
 void app_gateway_set_reset_intent(uint32_t intent);

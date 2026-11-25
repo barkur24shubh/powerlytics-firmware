@@ -1,9 +1,11 @@
 #include "app_modbus_payload.h"
 
 #include "app_powerlytics_engine.h"
+#include "app_identity.h"
 
 void app_modbus_payload_set_cfg(const modbus_cfg_t *cfg)
 {
+  app_identity_note_config(cfg ? cfg->device_id : NULL);
   app_powerlytics_engine_apply_config(cfg);
 }
 
