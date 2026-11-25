@@ -20,6 +20,9 @@
 #include "app_firmware.h"
 #include "modem_handler.h"
 #include "app_gateway_platform.h"
+#include "app_identity.h"
+
+extern char imei[20]; /* the modem IMEI (modem_handler.c): a hardware attribute reported in hello, not the unit's identity */
 
 #include <stdio.h>
 #include <string.h>
@@ -107,12 +110,15 @@ static uint8_t publish_hello_once(void)
     static uint8_t sent = 0U;
     static char payload[1200];
     if (sent || !connectivity_is_online()) return sent;
+    char hardware_ids[80];
+    app_identity_hardware_ids_json(hardware_ids, sizeof(hardware_ids), imei);
 
     int idx = snprintf(payload, sizeof(payload),
         "{\"type\":\"hello\",\"v\":1,\"model\":\"%s\",\"hw\":\"%s\","
         "\"fw\":{\"version\":\"%s\",\"build\":\"%s\"},\"connectivity\":\"CELLULAR\","
-        "\"channels\":{\"AI\":[",
-        APP_DEVICE_MODEL, BOARD_HW_REVISION, APP_FIRMWARE_VERSION, APP_FIRMWARE_BUILD);
+        /* What the hardware says about itself: attributes. The unit's identity is its deviceId, in the topic. */
+        "\"hardwareIds\":%s,\"channels\":{\"AI\":[",
+        APP_DEVICE_MODEL, BOARD_HW_REVISION, APP_FIRMWARE_VERSION, APP_FIRMWARE_BUILD, hardware_ids);
     if (idx < 0 || idx >= (int)sizeof(payload)) return 0U;
 #define APPEND_CHANNELS(prefix, count) do { \
     for (uint8_t ci = 0U; ci < (count); ci++) { \
@@ -621,6 +627,7 @@ void app_gateway_runtime_task(void *argument)
         app_watchdog_refresh();
 
         connectivity_run_once();
+        app_identity_service(HAL_GetTick()); /* USB "ID" commands, and the one restart after the unit learns its deviceId */
 
         if (connectivity_ota_is_busy())
         {

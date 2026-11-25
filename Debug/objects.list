@@ -9,6 +9,8 @@
 "./Core/Src/app_powerlytics_engine.o"
 "./Core/Src/app_rule_eval.o"
 "./Core/Src/app_rule_action.o"
+"./Core/Src/app_identity.o"
+"./Core/Src/app_identity_core.o"
 "./Core/Src/secondary_adc_link.o"
 "./Core/Src/app_sd_card.o"
 "./Core/Src/app_watchdog.o"

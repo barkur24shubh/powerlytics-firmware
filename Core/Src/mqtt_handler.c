@@ -10,6 +10,7 @@
 
 #include "mqtt_handler.h"
 #include "app_powerlytics_engine.h"
+#include "app_identity.h"
 #include "mqtt_root_ca.h"
 #include "app_gateway_platform.h"
 #include "main.h"
@@ -1165,14 +1166,15 @@ static const char *mqtt_topic_kind(const char *topic)
    ========================================================= */
 void Prepare_MQTT_Topics(void)
 {
-    /* Use the modem-reported IMEI; a fixed topic identity can route this
-     * physical unit's traffic to another registered device. */
-    if (!imei[0])
+    /* The unit's one id names its topics: its deviceId (the manufacture record, else the deployed configuration's
+     * device_id), or, for first contact of a cellular unit that knows nothing else, its modem IMEI (as before 1.0.20).
+     * A fixed id compiled into the image would route every unit's traffic to one registered device. */
+    const char *device_id = app_identity_topic_id(imei);
+    if (!device_id)
     {
-        print("[MQTT] topics not prepared: modem IMEI unavailable\r\n");
+        print("[MQTT] topics not prepared: no deviceId and no modem IMEI yet\r\n");
         return;
     }
-    const char *device_id = imei;
 
     snprintf(topic_d2c_telemetry, sizeof(topic_d2c_telemetry),
              "d2c/%s/telemetry_test", device_id);
@@ -1192,7 +1194,7 @@ void Prepare_MQTT_Topics(void)
     snprintf(topic_d2c_event, sizeof(topic_d2c_event),
              "d2c/%s/event_test", device_id);
 
-    print("[MQTT] topics ready imei=%s commandTopic=%s\r\n",
+    print("[MQTT] topics ready id=%s commandTopic=%s\r\n",
           device_id,
           topic_c2d_commands);
 }
@@ -1267,7 +1269,9 @@ uint8_t MQTT_Connect(const char *host, int port, const char *user, const char *p
     osDelay(1000);
 
     /* 4. Acquire Client (trailing ,1 for secure) */
-    snprintf(cmd, sizeof(cmd), "AT+CMQTTACCQ=0,\"STM32_%s\",1", imei);
+    char client_id[40];
+    app_identity_client_id(client_id, sizeof(client_id), imei);
+    snprintf(cmd, sizeof(cmd), "AT+CMQTTACCQ=0,\"%s\",1", client_id);
     fail_stage = "CMQTTACCQ";
     if (!SendCommandWithRetry(cmd, "OK", 5000, 3)) goto fail;
 
