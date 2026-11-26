@@ -4,6 +4,7 @@
 #include "cmsis_os.h"
 #include "stm32f4xx_hal.h"
 
+#include "app_identity.h"
 #include "app_log.h"
 #include "app_modbus_payload.h"
 #include "config.h"
@@ -496,6 +497,14 @@ void comm_manager_run_once(void)
         if (imei[0] == '\0')
         {
             GetIMEI();
+        }
+
+        if (!app_identity_device_id()[0])
+        {
+            /* Not provisioned: no deviceId in flash, so no identity to connect under. Not a fault: wait, do not escalate. */
+            print("[COMM] no deviceId stored: staying off the network (provision it: ID SET <deviceId>)\r\n");
+            osDelay(10000);
+            break;
         }
 
         Prepare_MQTT_Topics();

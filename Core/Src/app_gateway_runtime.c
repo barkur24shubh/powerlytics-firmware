@@ -627,7 +627,7 @@ void app_gateway_runtime_task(void *argument)
         app_watchdog_refresh();
 
         connectivity_run_once();
-        app_identity_service(HAL_GetTick()); /* USB "ID" commands, and the one restart after the unit learns its deviceId */
+        app_identity_service(HAL_GetTick()); /* USB "ID" commands */
 
         if (connectivity_ota_is_busy())
         {

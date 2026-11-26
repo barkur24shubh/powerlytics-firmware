@@ -12,25 +12,10 @@ uint8_t app_id_is_device_id(const char *s)
   return (s[APP_ID_LEN] == '\0') ? 1U : 0U;
 }
 
-const char *app_id_choose(const char *record, const char *config, const char *imei, app_id_src_t *src)
+uint8_t app_id_config_matches(const char *record, const char *config)
 {
-  app_id_src_t s = APP_ID_SRC_NONE;
-  const char *id = NULL;
-  if (app_id_is_device_id(record)) { id = record; s = APP_ID_SRC_RECORD; }
-  else if (app_id_is_device_id(config)) { id = config; s = APP_ID_SRC_CONFIG; }
-  else if (imei && imei[0]) { id = imei; s = APP_ID_SRC_IMEI; }
-  if (src) *src = s;
-  return id;
-}
-
-const char *app_id_src_name(app_id_src_t src)
-{
-  switch (src) {
-    case APP_ID_SRC_RECORD: return "record";
-    case APP_ID_SRC_CONFIG: return "config";
-    case APP_ID_SRC_IMEI:   return "imei";
-    default:                return "none";
-  }
+  if (!app_id_is_device_id(record) || !app_id_is_device_id(config)) return 0U;
+  return (strcmp(record, config) == 0) ? 1U : 0U;
 }
 
 void app_id_format_uid(const uint32_t words[3], char out[APP_ID_LEN + 1U])

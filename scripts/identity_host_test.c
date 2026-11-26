@@ -23,15 +23,12 @@ int main(void)
   CHECK(!app_id_is_device_id(""), "empty is not");
   CHECK(!app_id_is_device_id(NULL), "NULL is not");
 
-  printf("I2 the order of precedence: record, then config, then IMEI\n");
-  app_id_src_t src;
-  CHECK(app_id_choose(ID_A, ID_B, "863110085107293", &src) == ID_A && src == APP_ID_SRC_RECORD, "the manufacture record wins");
-  CHECK(app_id_choose("", ID_B, "863110085107293", &src) == ID_B && src == APP_ID_SRC_CONFIG, "then the deployed configuration's device_id");
-  CHECK(strcmp(app_id_choose(NULL, "", "863110085107293", &src), "863110085107293") == 0 && src == APP_ID_SRC_IMEI, "a unit that knows only its IMEI uses it for first contact");
-  CHECK(app_id_choose("", "", "", &src) == NULL && src == APP_ID_SRC_NONE, "a unit that knows nothing has no id (it must not publish under a made-up one)");
-  CHECK(app_id_choose("garbage", "also-garbage", NULL, &src) == NULL, "malformed ids are ignored, never used");
-  CHECK(app_id_choose("not-an-id", ID_B, NULL, &src) == ID_B && src == APP_ID_SRC_CONFIG, "a malformed record falls through to the config");
-  CHECK(strcmp(app_id_src_name(APP_ID_SRC_RECORD), "record") == 0 && strcmp(app_id_src_name(APP_ID_SRC_NONE), "none") == 0, "source names");
+  printf("I2 a configuration is never the identity; a mismatch is only detected\n");
+  CHECK(app_id_config_matches(ID_A, ID_A), "a configuration for this unit matches");
+  CHECK(!app_id_config_matches(ID_A, ID_B), "a configuration for another unit does not");
+  CHECK(!app_id_config_matches("", ID_A), "a unit with no stored id matches nothing (it adopts nothing)");
+  CHECK(!app_id_config_matches(ID_A, "863110085107293"), "an IMEI in device_id is not a match");
+  CHECK(!app_id_config_matches(NULL, NULL), "NULLs do not match");
 
   printf("I3 the MCU factory unique ID as 24 hex characters\n");
   const uint32_t uid[3] = { 0x0047001EU, 0x3532510DU, 0x31353637U };
